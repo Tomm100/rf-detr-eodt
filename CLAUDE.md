@@ -37,7 +37,9 @@ Questo è un **fork di RF-DETR per una tesi magistrale** (Tommaso Centonze, Poli
 ## Ambiente locale (PC)
 
 - Python 3.11 in `.venv` (creato con uv). Esegui sempre con `.venv/Scripts/python.exe`, per esempio:
-  - test di EoDT: `.venv/Scripts/python.exe -m pytest tests/eodt -q -p no:cacheprovider`
+  - test veloci di EoDT (solo ViT-S): `.venv/Scripts/python.exe -m pytest tests/eodt -q -p no:cacheprovider --confcutdir=tests/eodt -m "not gpu"`
+  - tutti i test di EoDT (anche ViT-B e ViT-L, lenti su CPU): lo stesso comando senza `-m "not gpu"`
+  - `--confcutdir=tests/eodt` serve a saltare `tests/conftest.py` di RF-DETR, che importa `fuse_augmentations` (dipendenza di sviluppo non installata) e a ogni sessione scarica `facebook/dinov2-with-registers-base`. I test di EoDT non lo usano: se servono fixture comuni, vanno in `tests/eodt/conftest.py`.
   - uno script: `.venv/Scripts/python.exe path/script.py`
 - GPU: **GTX 1650, 4 GB, niente bf16**. In locale usa fp32 (o fp16), batch piccoli e, per l'overfit, risoluzione ridotta. I passi 1-4 devono girare anche su CPU.
 - **Dipendenze:** non installare né aggiornare pacchetti senza chiedere. Le versioni sono fissate in `requirements-eodt.txt` e devono restare identiche a Leonardo (§11 della specifica).
