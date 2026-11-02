@@ -30,6 +30,8 @@ VITS = "vit_small_patch14_reg4_dinov2"
 # Native DINOv2 setting of the pretrained checkpoints: 518 px at patch 14 (37 x 37 grid).
 NATIVE_RESOLUTION = 518
 NATIVE_PATCH_SIZE = 14
+# Irrelevant here: these tests run all blocks without queries.
+NUM_L2_BLOCKS = 3
 
 
 @pytest.fixture(scope="module")
@@ -55,7 +57,7 @@ def test_load_keys_and_resampling(name: str, timm_original) -> None:
     resolution, patch_size = 576, 16
     grid = resolution // patch_size
     original = timm_original(name).state_dict()
-    loaded = EoDTBackbone(name, resolution, patch_size, pretrained=True).vit.state_dict()
+    loaded = EoDTBackbone(name, resolution, patch_size, NUM_L2_BLOCKS, pretrained=True).vit.state_dict()
 
     assert set(loaded) == set(original)
 
@@ -80,7 +82,7 @@ def test_load_keys_and_resampling(name: str, timm_original) -> None:
 @pytest.mark.parametrize("name", BACKBONES)
 def test_patch14_identical_to_timm(name: str, timm_original) -> None:
     """At the native patch 14 and resolution, the output equals timm's forward_features."""
-    backbone = EoDTBackbone(name, NATIVE_RESOLUTION, NATIVE_PATCH_SIZE, pretrained=True).eval()
+    backbone = EoDTBackbone(name, NATIVE_RESOLUTION, NATIVE_PATCH_SIZE, NUM_L2_BLOCKS, pretrained=True).eval()
     x = torch.randn(1, 3, NATIVE_RESOLUTION, NATIVE_RESOLUTION, generator=torch.Generator().manual_seed(0))
 
     with torch.no_grad():
@@ -93,7 +95,7 @@ def test_patch14_identical_to_timm(name: str, timm_original) -> None:
 @pytest.mark.parametrize("resolution", [576, 640])
 def test_grid_shape(resolution: int) -> None:
     """The patch grid is R/16 x R/16 and the output has prefix + grid tokens."""
-    backbone = EoDTBackbone(VITS, resolution, 16, pretrained=False).eval()
+    backbone = EoDTBackbone(VITS, resolution, 16, NUM_L2_BLOCKS, pretrained=False).eval()
     grid = resolution // 16
 
     with torch.no_grad():
@@ -106,8 +108,8 @@ def test_grid_shape(resolution: int) -> None:
 def test_registers() -> None:
     """The reg4 backbone has CLS + 4 registers, i.e. 4 tokens more than plain DINOv2."""
     resolution = 224
-    with_registers = EoDTBackbone(VITS, resolution, 16, pretrained=False).eval()
-    without_registers = EoDTBackbone("vit_small_patch14_dinov2", resolution, 16, pretrained=False).eval()
+    with_registers = EoDTBackbone(VITS, resolution, 16, NUM_L2_BLOCKS, pretrained=False).eval()
+    without_registers = EoDTBackbone("vit_small_patch14_dinov2", resolution, 16, NUM_L2_BLOCKS, pretrained=False).eval()
     x = torch.randn(1, 3, resolution, resolution)
 
     with torch.no_grad():
@@ -123,7 +125,7 @@ def test_registers() -> None:
 def test_forward_backward(name: str) -> None:
     """Forward and backward give a finite loss and a finite gradient on every parameter."""
     resolution = 224  # small grid keeps ViT-L backward within CPU memory
-    backbone = EoDTBackbone(name, resolution, 16, pretrained=True).train()
+    backbone = EoDTBackbone(name, resolution, 16, NUM_L2_BLOCKS, pretrained=True).train()
 
     loss = backbone(torch.randn(2, 3, resolution, resolution)).mean()
     loss.backward()
@@ -137,4 +139,4 @@ def test_forward_backward(name: str) -> None:
 def test_resolution_not_divisible() -> None:
     """A resolution that is not a multiple of the patch size is rejected."""
     with pytest.raises(ValueError, match="divisible"):
-        EoDTBackbone(VITS, 500, 16, pretrained=False)
+        EoDTBackbone(VITS, 500, 16, NUM_L2_BLOCKS, pretrained=False)
