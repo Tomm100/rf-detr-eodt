@@ -15,7 +15,7 @@
 | Query | due modalità, scelte da configurazione: `learned` (come EoMT) e `selection` (come RF-DETR) | deciso | §3.3 |
 | Numero di query | Q = 300, configurabile | deciso | §3.3 |
 | Box | `learned`: box assoluto; `selection`: Δ sempre rispetto a b0 | deciso | §3.5 |
-| Testa | una sola, condivisa da tutti i blocchi L2 | deciso | §3.5 |
+| Testa | una sola, condivisa da tutti i blocchi L2; prima della testa la norm finale pre-addestrata del ViT (`vit.norm`), come EoMT | deciso | §3.5 |
 | Group-DETR | due alternative a confronto: (a) niente gruppi, che è anche la prima versione; (b) gruppi con patch isolati | deciso (Niccolò) | §4 |
 | Baseline | RF-DETR senza Group-DETR, configurazione Medium sul ViT-S | deciso; Medium [DA CONFERMARE] | §5 |
 | Catena di ablazione | con finestre → senza finestre → senza projector → EoDT, tutte riaddestrate | deciso (Niccolò) | §5 |
@@ -120,7 +120,8 @@ Q è configurabile, default 300 (EoMT ne usa 200). Nella modalità `selection`, 
 
 ### 3.5 Testa e box
 
-- **Una sola testa condivisa** da tutti i blocchi L2: `LayerNorm` → classi (`Linear`) e box (MLP a 3 strati, come `bbox_embed` di RF-DETR).
+- **Una sola testa condivisa** da tutti i blocchi L2: `vit.norm` → classi (`Linear`) e box (MLP a 3 strati, come `bbox_embed` di RF-DETR).
+- **La LayerNorm è la norm finale pre-addestrata del ViT** (`vit.norm`), applicata agli stati delle query dopo ogni blocco L2, come fa EoMT (`self.encoder.backbone.norm(x)` prima di `_predict`). Nessuna LayerNorm nuova: segue il principio della §3.4 (nessun layer nuovo dove il ViT ne ha già uno). Una LayerNorm dedicata alla testa resta un'eventuale ablazione.
 - Si applica **dopo ogni blocco L2**, sui soli token delle query.
 - Box, a seconda di `query_mode`:
   - `learned`: box assoluto, `sigmoid(bbox_embed(query))`, in ogni blocco L2;
