@@ -153,7 +153,7 @@ Il test del passo 1 e quello del passo 4 (§9) vanno ripetuti anche con ViT-B e 
 - **Formato:** lo stesso di RF-DETR. Il comando `rfdetr` (`src/rfdetr/training/cli.py`, basato su `LightningCLI`) legge file YAML come quelli in `configs/` (per esempio `configs/rfdetr_medium.yaml`). EoDT usa lo stesso meccanismo, con `EoDTConfig` come `ModelConfig` (§8 punto 2).
 - **Dove:** `configs/eodt/` per EoDT e `configs/baseline/` per la baseline, un file per esperimento, con un nome che dica cosa cambia (per esempio `eodt_vits_576_l2-3_learned.yaml`, `baseline_medium_nowin.yaml`).
 - **Parametri da esporre almeno:**
-  - **modello EoDT:** backbone, registri, risoluzione, L2, numero di query, `query_mode` (`learned` / `selection`), numero di gruppi (`group_detr`: 1 = alternativa (a), > 1 = alternativa (b));
+  - **modello EoDT:** backbone (che determina anche i registri: `…_reg4_dinov2` = 4 registri, nessun parametro separato), risoluzione, L2, numero di query, `query_mode` (`learned` / `selection`), numero di gruppi (`group_detr`: 1 = alternativa (a), > 1 = alternativa (b));
   - **baseline:** tutti quelli della §3.6;
   - **training:** epoch, batch, learning rate (testa e backbone), decadimento per strati, weight decay, warm-up (§7), EMA, coefficienti delle loss, seed.
 - **Tracciabilità:** ogni run salva nella propria cartella di output una copia della configurazione completa usata, compresi i default. `LightningCLI` lo fa già (`config.yaml`): verificare che resti attivo. Nella stessa cartella vanno salvati anche il commit git del codice e le versioni di Python, PyTorch, CUDA e timm.
@@ -303,7 +303,6 @@ Le versioni sono fissate in `requirements-eodt.txt` (generato da `requirements-e
 | | PC (test, passi 1-5) | Leonardo (training) |
 |---|---|---|
 | Cartella | `C:/dev/tesi/rf-detr-eodt` | `/leonardo_work/IscrC_EoDT/tcentonz/rf-detr-eodt` |
-f-detr-eodt` | `/leonardo_work/IscrC_EoDT/tcentonz/rf-detr-eodt` |
 | Ambiente | `.venv` (uv) | `/leonardo_work/IscrC_EoDT/tcentonz/eodt-venv` |
 | Attivazione | `.venv\Scripts\python.exe ...` | `module load python cuda && source /leonardo_work/IscrC_EoDT/tcentonz/eodt-venv/bin/activate` |
 | GPU | GTX 1650, 4 GB, **niente bf16** (fp32 o fp16) | 4× A100 64 GB per nodo |
