@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "additionalDirectories": [
+      "../ref-rfdetr",
+      "../ref-eomt"
+    ],
+    "deny": [
+      "Edit(//c/dev/tesi/ref-rfdetr/**)",
+      "Edit(//c/dev/tesi/ref-eomt/**)",
+      "Edit(../ref-rfdetr/**)",
+      "Edit(../ref-eomt/**)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(git rebase *)",
+      "Bash(git reset *)",
+      "Bash(git merge *)",
+      "Bash(git -C * commit *)",
+      "Bash(git -C * push *)",
+      "Bash(git -C * rebase *)",
+      "Bash(git -C * reset *)",
+      "Bash(git -C * merge *)",
+      "PowerShell(git commit *)",
+      "PowerShell(git push *)",
+      "PowerShell(git rebase *)",
+      "PowerShell(git reset *)",
+      "PowerShell(git merge *)",
+      "PowerShell(git -C * commit *)",
+      "PowerShell(git -C * push *)",
+      "PowerShell(git -C * rebase *)",
+      "PowerShell(git -C * reset *)",
+      "PowerShell(git -C * merge *)",
+      "Bash(sbatch *)",
+      "Bash(ssh *)",
+      "PowerShell(ssh *)"
+    ]
+  }
+}

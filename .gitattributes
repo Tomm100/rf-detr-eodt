@@ -1,0 +1,3 @@
+# Gli script per Leonardo (Linux) devono avere gli a capo Unix anche se modificati su Windows.
+*.sh text eol=lf
+*.slurm text eol=lf

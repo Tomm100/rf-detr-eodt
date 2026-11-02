@@ -1,0 +1,314 @@
+# EoDT — Specifica di implementazione
+
+> **Stato:** aggiornata il 31/10/2026 con tutte le decisioni prese con Niccolò. Le voci **[DA CONFERMARE]** hanno un default scelto ma non ancora confermato; le voci **[DA DECIDERE]** non hanno ancora una scelta. L'agente non cambia né le une né le altre di propria iniziativa. Tutto ciò che varia tra gli esperimenti si imposta da file di configurazione (§3.7).
+
+## 0. Riepilogo delle decisioni
+
+| Tema | Decisione | Stato | Dove |
+|---|---|---|---|
+| Backbone | DINOv2 da timm, attention globale, patch 16 al caricamento | deciso | §3.1 |
+| Registri | DINOv2 con 4 registri, in EoDT e nella baseline | deciso (Niccolò) | §3.1 |
+| Risoluzione | 576 px, uguale per tutte le taglie, configurabile | [DA CONFERMARE] | §3.1 |
+| Projector | rimosso | deciso | §1 |
+| Decoder | rimosso: query negli ultimi L2 blocchi del ViT | deciso | §3.2, §3.4 |
+| L2 | 3 per ViT-S e ViT-B, 4 per ViT-L (come EoMT), configurabile | deciso, da ablare | §3.2 |
+| Query | due modalità, scelte da configurazione: `learned` (come EoMT) e `selection` (come RF-DETR) | deciso | §3.3 |
+| Numero di query | Q = 300, configurabile | deciso | §3.3 |
+| Box | `learned`: box assoluto; `selection`: Δ sempre rispetto a b0 | deciso | §3.5 |
+| Testa | una sola, condivisa da tutti i blocchi L2 | deciso | §3.5 |
+| Group-DETR | due alternative a confronto: (a) niente gruppi, che è anche la prima versione; (b) gruppi con patch isolati | deciso (Niccolò) | §4 |
+| Baseline | RF-DETR senza Group-DETR, configurazione Medium sul ViT-S | deciso; Medium [DA CONFERMARE] | §5 |
+| Catena di ablazione | con finestre → senza finestre → senza projector → EoDT, tutte riaddestrate | deciso (Niccolò) | §5 |
+| Scaling a ViT-B e ViT-L | come scalare la baseline | [DA DECIDERE]; il codice deve già permetterlo da configurazione | §3.6 |
+| Ricetta di training | quella di RF-DETR con warm-up e learning rate che scende; rifinita sul ViT-S e identica per EoDT e baseline | deciso | §7 |
+| Numero di epoch | uguale per EoDT e baseline | [DA DECIDERE] dopo la prima run | §7 |
+| Warm-up | lineare di RF-DETR; quello in due fasi di EoMT come opzione, spenta di default | da rifinire | §7.1 |
+| Batch totale | uguale per EoDT e baseline | [DA DECIDERE] | §7.1 |
+| Checkpoint riportato | proposta: modello finale con EMA; stessa regola per tutti | [DA DECIDERE] | §7.1 |
+| NAS | no | deciso | §7 |
+| Objects365 | no | deciso | §7 |
+| Dataset | COCO 2017: train (118.287) per il training, val (5.000) per la valutazione | deciso | §6 |
+| Configurazione | un file YAML per esperimento, nessun valore scritto nel codice | deciso | §3.7 |
+| Git | l'agente non fa commit: li faccio io a mano | deciso | §2 |
+| Logging | W&B offline sul nodo di calcolo, sincronizzato dal nodo di login; stessa run tra job ripresi | deciso | §7.3 |
+
+## 1. Obiettivo
+
+EoDT (Encoder-only Detection Transformer) applica l'approccio di **EoMT** alla detection di **RF-DETR**: niente projector e niente decoder. Le query di detection vengono concatenate ai patch negli **ultimi L2 blocchi del ViT**, e un'unica attention fa sia la self-attention tra query sia la cross-attention verso l'immagine.
+
+Il confronto con la baseline deve essere **alla pari**: stesso codice di training, stesso dataloader, stessa valutazione, stessa ricetta. Per questo EoDT vive dentro il fork di RF-DETR e riusa tutto ciò che non riguarda l'architettura.
+
+## 2. Repository e regole
+
+| Cartella | Ruolo | Permessi |
+|---|---|---|
+| `rf-detr-eodt/` | fork di RF-DETR, branch `eodt` | si modifica **solo** qui |
+| `ref-rfdetr/` | RF-DETR originale, **stesso commit** del fork | sola lettura |
+| `ref-eomt/` | EoMT originale | sola lettura |
+
+- Tutto il codice nuovo va in `src/rfdetr/models/eodt/`, con i test in `tests/eodt/`.
+- **I file esistenti di RF-DETR non si modificano**, salvo il punto minimo necessario a registrare il nuovo modello, a farlo passare nel loop di training e a costruire la baseline (vedi §8). Ogni modifica fuori da `eodt/` va proposta nel piano e approvata prima di farla.
+- Non si aggiorna il fork da `upstream/develop` durante la tesi.
+- **L'agente non fa commit, push o altre operazioni git che modificano la storia** (`commit`, `push`, `rebase`, `reset`, `merge`). Alla fine di ogni passo si ferma e riassume cosa ha cambiato e quali test passano. Rivedo il diff e faccio il commit a mano.
+
+## 3. Architettura
+
+```
+immagine ─► patch embed (patch 16) + pos. embed + [CLS, 4 registri]
+         ─► blocchi L1 (solo token del ViT)
+                │
+                ├─► query (§3.3): selection ─► Q query con box b0
+                │                 oppure learned (come EoMT) ─► Q query, senza b0
+                ▼
+         ─► [query ‖ token del ViT] ─► blocco L2 #1 ─► testa ─► b0 + Δ1   (aux loss)
+                                    ─► blocco L2 #2 ─► testa ─► b0 + Δ2   (aux loss)
+                                    ─► ...
+                                    ─► blocco L2 #N ─► testa ─► b0 + ΔN   (uscita finale)
+```
+
+Lo schema mostra la modalità `selection`. Con la modalità `learned` le query non dipendono da L1, e la testa predice il box direttamente, senza b0 (§3.3, §3.5).
+
+### 3.1 Backbone
+
+- DINOv2 **da timm**, con attention globale (nessuna finestra).
+- Nome: `vit_small_patch14_reg4_dinov2` (ViT-S); `vit_base_patch14_reg4_dinov2` e `vit_large_patch14_reg4_dinov2` per le altre taglie.
+- **Patch 16 al caricamento**: `timm.create_model(name, pretrained=True, img_size=(R, R), patch_size=16, num_classes=0)`. timm ricampiona il patch embedding (FlexiViT) e interpola il positional embedding sulla griglia R/16. È lo stesso schema di `ref-eomt/models/vit.py`.
+- **Registri: sì** (deciso con Niccolò). DINOv2 con 4 registri, sia in EoDT sia nella baseline.
+- **[DA CONFERMARE] Risoluzione R = 576 come default**, la stessa della baseline (configurazione Medium di RF-DETR, §5). Uguale per tutte le taglie. Si imposta nel file di configurazione (§3.7), mai nel codice. Ingresso quadrato fisso, quindi niente padding: con R = 576 la griglia è 36×36 = 1296 patch.
+- Normalizzazione dell'immagine: la fa già il dataloader di RF-DETR (media e deviazione standard di ImageNet). **Non va ripetuta nel modello**: la normalizzazione interna di EoMT non va copiata.
+
+### 3.2 Divisione L1 / L2
+
+- L2 = numero di blocchi finali che contengono le query. **Default: 3 per ViT-S e ViT-B, 4 per ViT-L**, come in EoMT. Configurabile, perché è oggetto di ablazione.
+- L1 = blocchi totali − L2. Nei blocchi L1 entrano solo i token del ViT (CLS, registri e patch).
+
+### 3.3 Query: due modalità
+
+La costruzione delle query è **opzionale e si sceglie da configurazione** con `query_mode`. Entrambe le modalità devono restare disponibili, perché il confronto tra le due è un esperimento.
+
+| `query_mode` | Query | Box | `enc_outputs` |
+|---|---|---|---|
+| `learned` (come EoMT) | `nn.Embedding(Q, D)`, uguali per ogni immagine | predetto direttamente dalla testa | assente |
+| `selection` (come RF-DETR) | contenuto learnable + encoding di b0 | b0 + Δ | presente |
+
+Q è configurabile, default 300 (EoMT ne usa 200). Nella modalità `selection`, Q è il numero di patch selezionati (top-Q).
+
+**Modalità `learned` (come EoMT).** Come in `ref-eomt/models/eomt.py` (`self.q`, concatenato in `EoMT.forward`): Q vettori imparati, che non dipendono dall'immagine, attaccati ai token del ViT prima del primo blocco L2. Non c'è b0: la testa predice il box assoluto, `sigmoid(MLP(query))`, come in DETR.
+
+**Modalità `selection` (come RF-DETR).** Riprende la selection a due stadi di RF-DETR (`ref-rfdetr/src/rfdetr/models/transformer.py`, `Transformer.forward`, ramo `if self.two_stage`), adattata a **una sola scala**: i patch in uscita da L1.
+
+1. Prendi i soli token dei patch in uscita da L1.
+2. Genera le proposte con `gen_encoder_output_proposals` (stesso file), usando una sola scala e `unsigmoid=False` (perché `bbox_reparam=True`).
+3. Applica `Linear` + `LayerNorm` (l'equivalente di `enc_output` / `enc_output_norm`), poi la testa di classe (`enc_out_class_embed`).
+4. **Top-Q** in base al massimo punteggio di classe.
+5. Solo sui token selezionati, la testa del box (`enc_out_bbox_embed`) predice un Δ rispetto alla proposta, con la stessa formula `bbox_reparam` di RF-DETR:
+   - centro = Δxy · wh_proposta + xy_proposta;
+   - dimensioni = exp(Δwh) · wh_proposta.
+
+   Il risultato è il **box iniziale b0**, che viene staccato dal grafo (`detach`) come in RF-DETR.
+6. Costruisci il token di ogni query come **contenuto learnable** (`nn.Embedding(Q, D)`) + **encoding del box**: `gen_sineembed_for_position(b0)` seguito da un MLP, come `ref_point_head` nel decoder di RF-DETR.
+7. Le uscite di questo stadio (classi e box b0 prima del detach) vanno in `enc_outputs`, per la loss del primo stadio, come in RF-DETR.
+
+> Ordine di implementazione: prima `learned`, che è più semplice e serve per la prima run e per il confronto con la baseline; `selection` si aggiunge dopo, quando la ricetta è fissata (§9, passo 11).
+
+### 3.4 Blocchi L2
+
+- Concatena **[query ‖ token del ViT]**, con le query in testa, come `ref-eomt/models/eomt.py`, `EoMT.forward`.
+- Ogni blocco L2 è il **blocco originale di DINOv2**, con gli stessi pesi e la stessa struttura: attention, MLP e layer scale. **Nessun layer nuovo dentro i blocchi.**
+- Attention: piena tra tutti i token nella versione base. L'attention mask serve solo per le varianti di Group-DETR (§4).
+- Niente masked attention e niente mask annealing: sono specifici della segmentazione.
+
+### 3.5 Testa e box
+
+- **Una sola testa condivisa** da tutti i blocchi L2: `LayerNorm` → classi (`Linear`) e box (MLP a 3 strati, come `bbox_embed` di RF-DETR).
+- Si applica **dopo ogni blocco L2**, sui soli token delle query.
+- Box, a seconda di `query_mode`:
+  - `learned`: box assoluto, `sigmoid(bbox_embed(query))`, in ogni blocco L2;
+  - `selection`: **Δ sempre rispetto a b0**, non al box del blocco precedente. È il comportamento di RF-DETR con `lite_refpoint_refine=True` e `bbox_reparam=True` (vedi `LWDETR.forward` in `ref-rfdetr/src/rfdetr/models/lwdetr.py`).
+- Uscita in formato RF-DETR, così `SetCriterion` e `PostProcess` funzionano senza modifiche:
+
+```python
+{
+    "pred_logits": Tensor[B, Q, C],   # ultimo blocco L2
+    "pred_boxes":  Tensor[B, Q, 4],   # cxcywh normalizzati in [0, 1]
+    "aux_outputs": [{"pred_logits": ..., "pred_boxes": ...}, ...],  # gli altri blocchi L2
+    "enc_outputs": {"pred_logits": ..., "pred_boxes": ...},         # solo con query_mode = "selection"
+}
+```
+
+### 3.6 Scaling da ViT-S a ViT-B e ViT-L
+
+**[DA DECIDERE]** Come scalare la baseline (decoder uguale per tutte le taglie oppure scalato come in RF-DETR) non è ancora deciso. Per EoDT lo scaling è chiaro: cambia il backbone e, al massimo, L2.
+
+**Il codice deve permettere di passare da una taglia all'altra cambiando solo la configurazione, senza toccare il codice.** Devono quindi essere parametri di configurazione, senza valori scritti nel codice:
+- **EoDT:** nome del backbone timm, L2, risoluzione, numero di query; la dimensione nascosta si ricava dal backbone;
+- **baseline:** taglia del backbone DINOv2, layer del decoder, dimensione nascosta (`hidden_dim`), teste di attention, numero di finestre, projector sì/no, risoluzione.
+
+Il test del passo 1 e quello del passo 4 (§9) vanno ripetuti anche con ViT-B e ViT-L, almeno in forward e backward, senza training.
+
+### 3.7 Configurazione ed esperimenti
+
+**Regola generale:** ogni valore che può cambiare tra un esperimento e l'altro è un parametro di configurazione, mai un valore scritto nel codice. Ogni esperimento corrisponde a un file di configurazione, così da poter tenere traccia di cosa è stato lanciato.
+
+- **Formato:** lo stesso di RF-DETR. Il comando `rfdetr` (`src/rfdetr/training/cli.py`, basato su `LightningCLI`) legge file YAML come quelli in `configs/` (per esempio `configs/rfdetr_medium.yaml`). EoDT usa lo stesso meccanismo, con `EoDTConfig` come `ModelConfig` (§8 punto 2).
+- **Dove:** `configs/eodt/` per EoDT e `configs/baseline/` per la baseline, un file per esperimento, con un nome che dica cosa cambia (per esempio `eodt_vits_576_l2-3_learned.yaml`, `baseline_medium_nowin.yaml`).
+- **Parametri da esporre almeno:**
+  - **modello EoDT:** backbone, registri, risoluzione, L2, numero di query, `query_mode` (`learned` / `selection`), numero di gruppi (`group_detr`: 1 = alternativa (a), > 1 = alternativa (b));
+  - **baseline:** tutti quelli della §3.6;
+  - **training:** epoch, batch, learning rate (testa e backbone), decadimento per strati, weight decay, warm-up (§7), EMA, coefficienti delle loss, seed.
+- **Tracciabilità:** ogni run salva nella propria cartella di output una copia della configurazione completa usata, compresi i default. `LightningCLI` lo fa già (`config.yaml`): verificare che resti attivo. Nella stessa cartella vanno salvati anche il commit git del codice e le versioni di Python, PyTorch, CUDA e timm.
+- **Default:** i valori di §3, §5 e §7 sono i default delle configurazioni. Un esperimento li cambia solo nel proprio file YAML.
+- **Test:** per ogni parametro esposto, verificare che un valore diverso nel YAML arrivi davvero al modello (per esempio: con risoluzione 640 la griglia diventa 40×40; con L2 = 4 le query entrano un blocco prima).
+
+## 4. Group-DETR
+
+Le alternative da confrontare sono due, scelte con `group_detr` nel file di configurazione:
+- **(a) niente gruppi** (`group_detr = 1`): Q query, nessuna duplicazione. È anche **la prima versione** da implementare, con entrambe le modalità di query, e non richiede codice in più.
+- **(b) patch isolati** (`group_detr = G > 1`), da implementare **dopo** che la modalità `selection` funziona: G gruppi da Q query. Con l'attention mask:
+    - le query di un gruppo vedono solo le proprie query e i patch;
+    - i patch non vedono le query.
+
+  Così i gruppi non si contaminano passando dai patch. Ogni gruppo ha le proprie query (con `selection`, la propria query selection, come in RF-DETR). Deve funzionare con entrambe le modalità. In valutazione si usa solo il primo gruppo.
+- Scartata: duplicare i patch per ogni gruppo, perché troppo costosa.
+
+## 5. Baseline
+
+La baseline è **RF-DETR riaddestrato con lo stesso training di EoDT**, senza Group-DETR (deciso con Niccolò, per contenere il costo). Si toglie un componente alla volta fino ad arrivare a EoDT, come nella Tabella 1 di EoMT:
+
+| Run | Finestre | Projector | Decoder |
+|---|---|---|---|
+| RF-DETR | sì (2) | sì | sì |
+| senza finestre | no | sì | sì |
+| senza projector | no | no: il decoder legge l'uscita dell'ultimo blocco del ViT, portata a `hidden_dim` con un `Linear` | sì |
+| **EoDT** | no | no | no: query negli ultimi L2 blocchi |
+
+- **Tutte le run vanno riaddestrate**, compresa quella con le finestre: i training devono essere equivalenti (Niccolò).
+- **Configurazione:** **[DA CONFERMARE] Medium di RF-DETR** sul ViT-S: 576 px, 4 layer del decoder, 300 query. Niccolò ha detto di partire dalla configurazione di default di RF-DETR e di sceglierne una.
+- In comune con EoDT: DINOv2 con 4 registri, patch 16 (§8 punto 4), risoluzione, `group_detr = 1`, niente NAS, niente Objects365, stessa ricetta e stesse epoch (§7).
+- **Latenza dell'RF-DETR originale:** si misura anche sui checkpoint pubblicati, senza riaddestrare (§6). Serve perché senza finestre la baseline è più lenta dell'originale, e confrontarsi solo con lei favorirebbe EoDT.
+
+## 6. Valutazione
+
+- **Accuratezza:** AP COCO sul validation set 2017 (5.000 immagini), con la valutazione di RF-DETR. Il test set non si usa (non ha etichette pubbliche). Per COCO, anche la fase `test` di RF-DETR ricade su val2017. Quale checkpoint si valuta è indicato in §7.1.
+- **Velocità:** latenza, con lo stesso protocollo per tutti i modelli: stessa GPU, stessa precisione, batch 1, modelli compilati. In più: memoria, numero di parametri e FLOPs.
+- **Script di benchmark:** uno solo, usato per EoDT, per la baseline e per i checkpoint pubblicati di RF-DETR. Si implementa alla fine (§9 passo 13).
+
+## 7. Training
+
+### 7.0 Impostazione
+
+- **Una sola ricetta, identica per EoDT e baseline.** Si parte dalla ricetta di RF-DETR e la si rifinisce; la ricetta finale si usa per tutti i modelli.
+- **Attenzione:** i default di `TrainConfig` sono pensati per il **fine-tuning** di un RF-DETR già addestrato (`pretrain_weights` = checkpoint pubblicato): learning rate costante, nessun warm-up, checkpoint migliore su val. Qui invece si parte da DINOv2 con parti nuove casuali (decoder nella baseline, query e teste in EoDT), come in EoMT. Per questo il punto di partenza ha **due sole correzioni**, entrambe già disponibili in RF-DETR:
+  - un **warm-up** (`warmup_epochs`);
+  - un **learning rate che scende verso la fine** (`lr_scheduler: "cosine"`), così il training finisce in un punto stabile.
+- **Dataset:** COCO 2017, train (118.287 immagini); valutazione su val2017 (§6).
+- **Augmentation:** pipeline di torchvision, fissata esplicitamente con `augmentation_backend: torchvision` in ogni YAML. Albumentations non è installato (§11); fissarlo evita che il comportamento cambi a seconda dei pacchetti presenti.
+- **Niente NAS e niente Group-DETR** nella prima versione.
+- **Niente pre-training su Objects365** (deciso): EoDT e baseline partono entrambi da DINOv2 e si addestrano solo su COCO.
+
+### 7.1 Ricetta di partenza
+
+| Iperparametro | RF-DETR (default) | EoMT | Partenza | Stato |
+|---|---|---|---|---|
+| Learning rate | 1e-4 | 1e-4 | 1e-4 | deciso |
+| Learning rate del backbone | 1,5e-4 | 1e-4 | 1,5e-4 | deciso |
+| Decadimento per strati | 0,8 | 0,8 | 0,8 | deciso |
+| Weight decay | 1e-4 | 0,05 | 1e-4 | deciso |
+| Gradient clipping | 0,1 | 0,01 | 0,1 | deciso |
+| Loss, matcher, augmentation | RF-DETR | — | RF-DETR | deciso |
+| EMA | sì (0,993) | no | sì | deciso |
+| Precisione | bf16 su A100 | fp16 | bf16 | deciso |
+| Warm-up | nessuno | due fasi | lineare (`warmup_epochs`) | da rifinire |
+| Schedule del learning rate | costante (`step` con `lr_drop` = epoch) | polinomiale fino a 0 | `cosine` fino a ~0 | da rifinire |
+| Epoch | 100 | 12 | fisse, uguali per tutti | [DA DECIDERE] dopo la prima run |
+| Batch totale | 4 per GPU | 16 | — | [DA DECIDERE] in base alla memoria |
+| Checkpoint riportato | migliore su val (`checkpoint_best_total.pth`) | finale | proposta: finale con EMA (`last_ema.pth`), migliore registrato solo come controllo | [DA DECIDERE] |
+
+Tutti i valori si impostano nei file YAML (§3.7). Il checkpoint riportato, qualunque sia, deve seguire la stessa regola per EoDT e baseline.
+
+- **Warm-up in due fasi di EoMT** (prima solo le parti nuove, poi anche il backbone; `ref-eomt/training/two_stage_warmup_poly_schedule.py`): opzione da configurazione, **spenta di default**. Si prova solo se il warm-up lineare non basta. Se si usa, si usa anche nella baseline.
+
+### 7.2 Rifinitura della ricetta
+
+- **Si rifinisce solo sul ViT-S.** La ricetta trovata si porta su ViT-B e ViT-L senza nuove ricerche.
+- **Pochi parametri, uno alla volta**, in quest'ordine:
+  1. **stabilità** (warm-up, learning rate, gradient clipping), se la loss esplode o l'AP non sale;
+  2. **durata** (epoch, schedule), guardando le curve di val.
+- **Non sono rifiniture** le scelte di EoDT (L2, `query_mode`, Group-DETR): sono gli esperimenti della tesi e si fanno con la ricetta già fissata.
+- **Parità con la baseline:** ogni modifica alla ricetta va provata anche sulla baseline. Se una modifica aiuta EoDT ma peggiora la baseline, si tiene una sola ricetta e lo si riporta.
+- **Tracciabilità:** ogni tentativo è un file YAML e una run su W&B. Si tiene l'elenco delle configurazioni provate e del motivo della scelta finale.
+- **Controllo che la baseline non sia indebolita:** confrontare la baseline con finestre con il risultato di RF-DETR addestrato senza Objects365 (paper, Tabella 5), dopo aver verificato nel paper con quante epoch è stato ottenuto.
+
+### 7.3 Logging su W&B da Leonardo
+
+I nodi di calcolo di Leonardo non hanno accesso a internet: W&B lavora **offline** durante il job e i dati si caricano **dal nodo di login**.
+
+- RF-DETR ha già il logger W&B (`TrainConfig`: `wandb`, `project`, `run`; `WandbLogger` in `training/trainer.py`). Va attivato da YAML, non scritto da capo.
+- **Nello script SLURM:**
+  - `WANDB_MODE=offline`;
+  - `WANDB_DIR` su `$WORK` o `$SCRATCH`, non su `$HOME`, che ha poco spazio;
+  - `WANDB_RUN_ID` fisso per esperimento e `WANDB_RESUME=allow`: un training che supera le 24 ore viene spezzato in più job, che devono continuare **la stessa run** su W&B invece di crearne una nuova per ogni job.
+- **Dal nodo di login:** `wandb sync <cartella della run offline>` alla fine di ogni job, oppure periodicamente durante il job per seguire le curve. Il login a W&B lo faccio io a mano, una volta sola.
+- **Cosa registrare:** loss (totale e per componente), AP e AP50/AP75/APs/APm/APl a ogni valutazione, learning rate, tempo per iterazione e immagini al secondo, memoria GPU. Configurazione completa e commit git come in §3.7.
+- **Non caricare su W&B i checkpoint**: sono pesanti e restano su `$WORK`.
+- Con più GPU scrive su W&B solo il processo principale (rank 0). Lightning lo fa già: verificare che non ci siano run doppie.
+- Test (passo 6): un job di prova di pochi minuti, poi sincronizzato dal nodo di login, deve comparire su W&B con configurazione e curve; un secondo job ripreso dal checkpoint deve continuare la stessa run.
+
+## 8. Punti di integrazione da verificare (il piano li deve risolvere)
+
+1. **Learning rate per strati:** `_build_param_dicts` (`training/param_groups.py`) presuppone `model.backbone` di tipo `Joiner` con `backbone[0].get_named_param_lr_pairs(...)`, e cerca i parametri del decoder con il nome `transformer.decoder`. Per EoDT serve il decadimento per strati sui blocchi del ViT, compresi i blocchi L2. **Proporre** la soluzione meno invasiva: una struttura compatibile oppure una funzione dedicata per i gruppi di parametri.
+2. **Costruzione del modello:** come `build_model` / `build_model_from_config` (`models/lwdetr.py`) e la configurazione (`config.py`) arrivano a `RFDETRModelModule`. EoDT ha bisogno di una propria `ModelConfig` (`EoDTConfig`) e di un punto di registrazione.
+3. **Ingresso:** `LWDETR.forward` riceve un `NestedTensor`. EoDT deve accettare lo stesso tipo e ignorare la maschera, perché l'ingresso è quadrato e senza padding (`square_resize_div_64`).
+4. **Backbone della baseline:** RF-DETR carica DINOv2 da Hugging Face (`models/backbone/dinov2.py`). I registri sono già supportati (`use_registers`, encoder `dinov2_registers_windowed_small`). Però:
+   - con `patch_size != 14` **i pesi pre-addestrati non vengono caricati**, perché la repo pubblica si aspetta un checkpoint RF-DETR già a patch 16. Serve una conversione 14→16 al caricamento (ricampionamento del patch embedding, come fa timm), altrimenti la baseline parte da pesi casuali;
+   - `EncoderName` (`config.py`) prevede i registri solo per la taglia small: per ViT-B e ViT-L va esteso.
+5. **Baseline senza projector:** RF-DETR non ha un'opzione per togliere il projector. Serve un'opzione da configurazione che lo sostituisca con un `Linear` sull'uscita dell'ultimo blocco del ViT (§5).
+
+Per i punti 4 e 5, proporre la soluzione meno invasiva.
+
+## 9. Ordine di lavoro e verifiche
+
+Ogni passo si chiude **solo** quando il suo test passa. Poi l'agente si ferma: rivedo il diff e faccio io il commit (§2) prima di passare al passo successivo.
+
+**Principio dell'ordine:** su EoDT da solo si fanno i test e una prima run di **verifica**. La **rifinitura della ricetta** (§7.2) si fa solo dopo, guardando insieme EoDT e baseline, così la ricetta non viene tarata su un solo modello.
+
+| # | Passo | Test di verifica |
+|---|---|---|
+| | **EoDT `learned`** | |
+| 1 | Backbone timm a patch 16 | Nessuna chiave mancante o inattesa nel caricamento. Feature a patch 14 identiche al modello timm originale. Shape della griglia uguale a R/16. |
+| 2 | Blocchi L2 con query | Shape corrette. **I token del ViT in uscita da L1 sono identici a quelli del ViT senza query.** Con 0 query, l'uscita è identica al ViT originale. |
+| 3 | Query `learned` e testa | Formato dell'uscita come in §3.5, senza `enc_outputs`. Box in [0, 1]. |
+| 4 | Collegamento a criterion, training e configurazione YAML | Forward e backward su 2 immagini. Loss finita. **Gradiente non nullo su tutti i parametri addestrabili.** Il modello si costruisce da un file in `configs/eodt/`. |
+| 5 | **Overfit su 20 immagini** COCO, in locale | AP vicino a 100 dopo poche centinaia di step. **Se non succede, ci si ferma e si fa debug: non si va avanti.** |
+| 6 | Script per Leonardo e **prima run di verifica** su COCO (`learned`, ViT-S, ricetta di partenza §7.1) | Il run parte, la loss scende e l'AP sale, la valutazione gira a fine epoch, configurazione e commit salvati nella cartella di output (§3.7). La ripresa da checkpoint funziona (limite di 24 ore per job). Logging su W&B come in §7.3. Prima della run lunga, un **job di prova di 10-15 minuti** a risoluzione piena su più GPU (lo lancio io). **Non si modifica la ricetta in base a questa run.** |
+| | **Baseline** | |
+| 7 | **Decisione sulla baseline** con Niccolò (compito mio, non dell'agente): configurazione, finestre, quale run lanciare per prima | §5 aggiornata, [DA CONFERMARE] risolti, file YAML in `configs/baseline/`. |
+| 8 | Implementazione della baseline (§5, §8 punti 4 e 5): conversione DINOv2 14→16 con registri, opzione senza projector. **Il codice si può scrivere anche prima del passo 7**, perché risoluzione e layer del decoder sono solo valori nel YAML. | Caricamento DINOv2 a patch 16 con registri senza chiavi mancanti. Tutte le run della catena si costruiscono solo da YAML. **Test di equivalenza** tra il fork e `ref-rfdetr/` (stesso checkpoint, stessa immagine, output identico) sulla configurazione originale, per verificare che le modifiche non abbiano cambiato RF-DETR. Overfit su 20 immagini anche per la baseline. |
+| | **Confronto e ricetta** | |
+| 9 | **Due run insieme**: EoDT `learned` e baseline, ViT-S, stessa ricetta di partenza e stesse epoch | Entrambe completate, curve su W&B confrontabili (stesse metriche, stessi intervalli di valutazione). |
+| 10 | **Rifinitura della ricetta** (§7.2), guardando entrambe le run | Ogni modifica provata su EoDT e baseline. Ricetta finale scritta in §7.1, con l'elenco delle configurazioni provate. |
+| | **Resto di EoDT** | |
+| 11 | Query `selection` | Top-Q corretto. b0 senza gradiente. Con Δ = 0 il box è uguale a b0. `enc_outputs` presente. Il cambio di `query_mode` avviene solo da YAML. Ripetere i test 4 e 5, e verificare che `learned` funzioni ancora. |
+| 12 | Group-DETR, variante (b) | Attention mask: i patch non vedono le query, i gruppi non si vedono tra loro. Ripetere i test 4 e 5. |
+| 13 | Script di benchmark (§6) | Stessa misura su EoDT, baseline e un checkpoint pubblicato di RF-DETR. Risultati ripetibili tra due esecuzioni. |
+
+## 10. Fuori dalla specifica (per ora)
+
+Export, segmentazione, keypoint, modelli Plus, CUDA graphs, FP8, NAS, Objects365.
+
+## 11. Ambienti
+
+Le versioni sono fissate in `requirements-eodt.txt` (generato da `requirements-eodt.in`), **uguale per PC e Leonardo**: Python 3.11, PyTorch 2.6.0 con CUDA 12.4, torchvision 0.21.0, timm 1.0.30, transformers 5.17.0, pytorch-lightning 2.6.6, torchmetrics 1.8.2.
+
+| | PC (test, passi 1-5) | Leonardo (training) |
+|---|---|---|
+| Cartella | `C:/dev/tesi/rf-detr-eodt` | `/leonardo_work/IscrC_EoDT/tcentonz/rf-detr-eodt` |
+f-detr-eodt` | `/leonardo_work/IscrC_EoDT/tcentonz/rf-detr-eodt` |
+| Ambiente | `.venv` (uv) | `/leonardo_work/IscrC_EoDT/tcentonz/eodt-venv` |
+| Attivazione | `.venv\Scripts\python.exe ...` | `module load python cuda && source /leonardo_work/IscrC_EoDT/tcentonz/eodt-venv/bin/activate` |
+| GPU | GTX 1650, 4 GB, **niente bf16** (fp32 o fp16) | 4× A100 64 GB per nodo |
+| Chi lancia | l'agente (test) | io, a mano (l'agente scrive gli script SLURM) |
+
+- **Nuove dipendenze:** solo con il mio consenso. Si aggiungono a `requirements-eodt.in` e si rigenera il file bloccato con `python -m uv pip compile pyproject.toml requirements-eodt.in --extra train --universal --python-version 3.11 -o requirements-eodt.txt`; poi si reinstalla su PC e Leonardo.
+- **PyTorch sul PC:** va preso dall'indice CUDA (`--index-url https://download.pytorch.org/whl/cu124`), perché quello di PyPI per Windows è solo CPU. Su Linux quello di PyPI è già CUDA 12.4.
+- **Leonardo senza internet sui nodi di calcolo:** pesi di DINOv2 (timm/Hugging Face) e dataset vanno scaricati prima, dal nodo di login, nella cache su `$WORK`.

@@ -39,7 +39,9 @@ click==8.5.0
     #   typer
     #   wandb
 colorama==0.4.6 ; sys_platform == 'win32'
-    # via tqdm
+    # via
+    #   pytest
+    #   tqdm
 contourpy==1.3.3 ; python_full_version < '3.12'
     # via matplotlib
 contourpy==1.4.0 ; python_full_version >= '3.12'
@@ -103,6 +105,8 @@ idna==3.20
     #   requests
     #   roboflow
     #   yarl
+iniconfig==2.3.1
+    # via pytest
 jinja2==3.1.6
     # via torch
 kiwisolver==1.5.1
@@ -249,6 +253,8 @@ packaging==26.3
     #   lightning-utilities
     #   matplotlib
     #   peft
+    #   pytest
+    #   pytest-doctestplus
     #   pytorch-lightning
     #   tensorboard
     #   torchmetrics
@@ -267,6 +273,8 @@ pillow-avif-plugin==1.6.0
     # via roboflow
 platformdirs==4.14.3
     # via wandb
+pluggy==1.7.0
+    # via pytest
 propcache==0.5.4
     # via
     #   aiohttp
@@ -299,9 +307,20 @@ pydeprecate==0.9.0
     #   rfdetr (pyproject.toml)
     #   supervision
 pygments==2.21.0
-    # via rich
+    # via
+    #   pytest
+    #   rich
 pyparsing==3.3.3
     # via matplotlib
+pytest==9.2.0
+    # via
+    #   -r requirements-eodt.in
+    #   pytest-doctestplus
+    #   pytest-timeout
+pytest-doctestplus==1.7.1
+    # via -r requirements-eodt.in
+pytest-timeout==2.4.0
+    # via -r requirements-eodt.in
 python-dateutil==4.0.0
     # via
     #   matplotlib

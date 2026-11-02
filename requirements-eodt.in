@@ -8,3 +8,7 @@ torchmetrics==1.8.2
 timm
 wandb
 tensorboard
+# Test (configurazione pytest della repo: --doctest-plus)
+pytest
+pytest-doctestplus
+pytest-timeout
