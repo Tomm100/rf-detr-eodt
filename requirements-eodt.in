@@ -1,0 +1,10 @@
+# Dipendenze aggiuntive per EoDT, oltre a rfdetr[train] (vedi EODT_SPEC.md, §3.7).
+# Versioni di riferimento: quelle del venv di Leonardo con cui ha girato RF-DETR Nano.
+torch==2.6.0
+torchvision==0.21.0
+transformers==5.17.0
+pytorch-lightning==2.6.6
+torchmetrics==1.8.2
+timm
+wandb
+tensorboard
