@@ -42,6 +42,7 @@ Questo è un **fork di RF-DETR per una tesi magistrale** (Tommaso Centonze, Poli
 - GPU: **GTX 1650, 4 GB, niente bf16**. In locale usa fp32 (o fp16), batch piccoli e, per l'overfit, risoluzione ridotta. I passi 1-4 devono girare anche su CPU.
 - **Dipendenze:** non installare né aggiornare pacchetti senza chiedere. Le versioni sono fissate in `requirements-eodt.txt` e devono restare identiche a Leonardo (§11 della specifica).
 - I pesi di DINOv2 si scaricano da timm/Hugging Face al primo uso: va bene in locale.
+- **Dati per il test di overfit (passo 5):** `C:/dev/tesi/data/coco_mini`, mini-COCO in formato RF-DETR (`train2017/`, `val2017/`, `annotations/instances_{train,val}2017.json`): 20 immagini di val2017 con 2-10 oggetti ciascuna (85 oggetti, 32 classi), identiche in train e val. Non modificarla.
 
 ## Leonardo (training)
 
