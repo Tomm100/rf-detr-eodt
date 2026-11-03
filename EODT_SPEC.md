@@ -21,9 +21,9 @@
 | Catena di ablazione | con finestre → senza finestre → senza projector → EoDT, tutte riaddestrate | deciso (Niccolò) | §5 |
 | Scaling a ViT-B e ViT-L | come scalare la baseline | [DA DECIDERE]; il codice deve già permetterlo da configurazione | §3.6 |
 | Ricetta di training | quella di RF-DETR con warm-up e learning rate che scende; rifinita sul ViT-S e identica per EoDT e baseline | deciso | §7 |
-| Numero di epoch | uguale per EoDT e baseline | [DA DECIDERE] dopo la prima run | §7 |
+| Numero di epoch | 12 per le prime run, uguale per EoDT e baseline; definitivo dopo le curve | partenza | §7.1 |
 | Warm-up | lineare di RF-DETR; quello in due fasi di EoMT come opzione, spenta di default | da rifinire | §7.1 |
-| Batch totale | uguale per EoDT e baseline | [DA DECIDERE] | §7.1 |
+| Batch totale | 16 (4 per GPU × 4 GPU), uguale per EoDT e baseline | partenza | §7.1 |
 | Checkpoint riportato | proposta: modello finale con EMA; stessa regola per tutti | [DA DECIDERE] | §7.1 |
 | NAS | no | deciso | §7 |
 | Objects365 | no | deciso | §7 |
@@ -225,10 +225,11 @@ La baseline è **RF-DETR riaddestrato con lo stesso training di EoDT**, senza Gr
 | Loss, matcher, augmentation | RF-DETR | — | RF-DETR | deciso |
 | EMA | sì (0,993) | no | sì | deciso |
 | Precisione | bf16 su A100 | fp16 | bf16 | deciso |
-| Warm-up | nessuno | due fasi | lineare (`warmup_epochs`) | da rifinire |
+| Warm-up | nessuno | due fasi | lineare, `warmup_epochs: 1` (circa 7.400 iterazioni con batch 16) | partenza, da rifinire |
 | Schedule del learning rate | costante (`step` con `lr_drop` = epoch) | polinomiale fino a 0 | `cosine` fino a ~0 | da rifinire |
-| Epoch | 100 | 12 | fisse, uguali per tutti | [DA DECIDERE] dopo la prima run |
-| Batch totale | 4 per GPU | 16 | — | [DA DECIDERE] in base alla memoria |
+| Epoch | 100 | 12 | **12**, fisse, uguali per tutti | partenza; il numero definitivo dopo le prime run |
+| Batch totale | 4 per GPU (16 effettivo raccomandato) | 16 | **16**: `batch_size: 4` per GPU × 4 GPU, `grad_accum_steps: 1` | partenza |
+| Seed | — | 0 | **0**, uguale per EoDT e baseline | deciso |
 | Checkpoint riportato | migliore su val (`checkpoint_best_total.pth`) | finale | proposta: finale con EMA (`last_ema.pth`), migliore registrato solo come controllo | [DA DECIDERE] |
 
 **Learning rate e weight decay del ViT: identici alla baseline**, tensore per tensore (formula di RF-DETR: `get_dinov2_lr_decay_rate`, `get_dinov2_weight_decay_rate`, `lr_component_decay`²):
@@ -236,6 +237,10 @@ La baseline è **RF-DETR riaddestrato con lo stesso training di EoDT**, senza Gr
 - **i blocchi L2 seguono la stessa formula degli altri blocchi**: sono blocchi pre-addestrati di DINOv2, non strati nuovi;
 - weight decay 0 su embedding, bias e norm; `weight_decay` sugli altri pesi, layer scale compreso;
 - query, `class_embed` e `bbox_embed` (nuovi): learning rate `lr` = 1e-4, come query e teste di RF-DETR.
+
+**Valori di partenza** (prima run e confronto con la baseline, passi 6 e 9): batch totale 16, 12 epoch, `warmup_epochs: 1`, seed 0. Non sono definitivi: si rifiniscono al passo 10 (§7.2). Note:
+- la schedule `cosine` dipende dal numero di epoch: run con epoch diverse non sono confrontabili tra loro, solo EoDT e baseline alla stessa durata;
+- il YAML con questi valori è quello per Leonardo (bf16, 4 GPU). Per l'overfit in locale (passo 5) serve un YAML a parte: GTX 1650, fp32, batch piccolo, risoluzione ridotta.
 
 Tutti i valori si impostano nei file YAML (§3.7). Il checkpoint riportato, qualunque sia, deve seguire la stessa regola per EoDT e baseline.
 
