@@ -109,6 +109,8 @@ Q è configurabile, default 300 (EoMT ne usa 200). Nella modalità `selection`, 
 6. Costruisci il token di ogni query come **contenuto learnable** (`nn.Embedding(Q, D)`) + **encoding del box**: `gen_sineembed_for_position(b0)` seguito da un MLP, come `ref_point_head` nel decoder di RF-DETR.
 7. Le uscite di questo stadio (classi e box b0 prima del detach) vanno in `enc_outputs`, per la loss del primo stadio, come in RF-DETR.
 
+**Inizializzazione dell'ultimo strato di `bbox_embed`:** dipende dalla modalità. In `learned` il box è assoluto: inizializzazione di default di `nn.Linear`, come DETR (con lo zero tutte le query partirebbero dallo stesso box). In `selection` il box è Δ rispetto a b0: **peso e bias a zero**, come RF-DETR, così all'inizio ogni query predice il proprio b0. Il bias di `class_embed` parte da una probabilità a priori di 0,01 in entrambe le modalità, costante nel codice come in `LWDETR`.
+
 > Ordine di implementazione: prima `learned`, che è più semplice e serve per la prima run e per il confronto con la baseline; `selection` si aggiunge dopo, quando la ricetta è fissata (§9, passo 11).
 
 ### 3.4 Blocchi L2
@@ -264,6 +266,10 @@ I nodi di calcolo di Leonardo non hanno accesso a internet: W&B lavora **offline
    - con `patch_size != 14` **i pesi pre-addestrati non vengono caricati**, perché la repo pubblica si aspetta un checkpoint RF-DETR già a patch 16. Serve una conversione 14→16 al caricamento (ricampionamento del patch embedding, come fa timm), altrimenti la baseline parte da pesi casuali;
    - `EncoderName` (`config.py`) prevede i registri solo per la taglia small: per ViT-B e ViT-L va esteso.
 5. **Baseline senza projector:** RF-DETR non ha un'opzione per togliere il projector. Serve un'opzione da configurazione che lo sostituisca con un `Linear` sull'uscita dell'ultimo blocco del ViT (§5).
+
+6. **Pesi delle aux loss:** `build_criterion_and_postprocessors` (`models/lwdetr.py`) costruisce i pesi delle loss intermedie con `range(args.dec_layers - 1)`. EoDT non ha decoder: servono **L2 − 1** pesi, uno per ogni blocco L2 tranne l'ultimo. Senza questa correzione le `aux_outputs` restano senza peso e la deep supervision sparisce **senza errori**. Va coperto da un test.
+7. **Numero di classi:** `EoDT(num_classes=...)` è il numero di uscite. Come in `build_model`, il costruttore che legge la configurazione passa `num_classes + 1`: per COCO `ModelConfig.num_classes = 90` → **91 uscite** (gli id COCO 1-90 sono usati direttamente come indici; sigmoid per classe, nessuna classe "nessun oggetto").
+8. **`query_mode` in `EoDTConfig`:** campo della configurazione già dal passo 4, per ora con il solo valore `learned`, così compare nei YAML delle prime run (passi 6, 9, 10). Il valore `selection` si aggiunge al passo 11.
 
 Per i punti 4 e 5, proporre la soluzione meno invasiva.
 
