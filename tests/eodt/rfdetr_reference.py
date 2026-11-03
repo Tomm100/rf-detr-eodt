@@ -17,25 +17,52 @@ import warnings
 import torch
 
 import rfdetr
+from rfdetr._namespace import _namespace_from_configs
 from rfdetr.config import RFDETRMediumConfig, TrainConfig
-from rfdetr.models.lwdetr import build_model_from_config
+from rfdetr.models.lwdetr import build_criterion_from_config, build_model_from_config
+from rfdetr.training.param_groups import get_param_dict
 
 
 def main(output_file: str) -> None:
-    """Build RF-DETR Medium with random weights and save its state dict and its output on a fixed image."""
+    """Build RF-DETR Medium with random weights and save model, outputs, losses and optimizer groups."""
     warnings.simplefilter("ignore")  # pretrain_weights=None warns that the model starts from scratch
     torch.manual_seed(0)
     # patch 16: the DINOv2 weights are not loaded, so nothing is downloaded and the weights are random
     model_config = RFDETRMediumConfig(pretrain_weights=None, device="cpu")
     train_config = TrainConfig(dataset_dir=".", output_dir=".")
     model = build_model_from_config(model_config, train_config).eval()
+    criterion, _ = build_criterion_from_config(model_config, train_config)
 
     resolution = model_config.resolution
     x = torch.randn(1, 3, resolution, resolution, generator=torch.Generator().manual_seed(1))
     with torch.no_grad():
         outputs = model(x)
 
-    torch.save({"rfdetr_file": rfdetr.__file__, "state_dict": model.state_dict(), "outputs": outputs}, output_file)
+    # losses on fixed targets, in training mode (all the Group-DETR queries)
+    targets = [{"labels": torch.tensor([1, 5]), "boxes": torch.tensor([[0.3, 0.4, 0.2, 0.3], [0.7, 0.6, 0.4, 0.2]])}]
+    model.train()
+    torch.manual_seed(2)
+    with torch.no_grad():
+        loss_dict = criterion(model(x, targets), targets)
+
+    # optimizer groups as (hyperparameters, parameter names)
+    names = {id(param): name for name, param in model.named_parameters()}
+    param_groups = []
+    for group in get_param_dict(_namespace_from_configs(model_config, train_config), model):
+        hyperparameters = {key: value for key, value in group.items() if key != "params"}
+        param_groups.append((hyperparameters, [names[id(param)] for param in group["params"]]))
+
+    torch.save(
+        {
+            "rfdetr_file": rfdetr.__file__,
+            "state_dict": model.state_dict(),
+            "outputs": outputs,
+            "weight_dict": criterion.weight_dict,
+            "loss_dict": loss_dict,
+            "param_groups": param_groups,
+        },
+        output_file,
+    )
 
 
 if __name__ == "__main__":

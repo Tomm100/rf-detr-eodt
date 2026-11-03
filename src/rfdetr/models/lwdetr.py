@@ -1006,6 +1006,12 @@ def build_criterion_from_config(
     Returns:
         A 2-tuple of ``(SetCriterion, PostProcess)``.
     """
+    # EoDT fork: one aux loss per L2 block but the last instead of per decoder layer (EODT_SPEC.md §8, point 6)
+    from rfdetr.models.eodt import EoDTConfig, build_eodt_criterion_from_config
+
+    if isinstance(model_config, EoDTConfig):
+        return build_eodt_criterion_from_config(model_config, train_config, defaults)
+
     from rfdetr._namespace import _namespace_from_configs
 
     ns = _namespace_from_configs(model_config, train_config, defaults)

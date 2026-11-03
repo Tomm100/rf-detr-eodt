@@ -108,6 +108,12 @@ def _build_param_dicts(args: Any, model_without_ddp: nn.Module) -> list[dict[str
         decoder. :func:`get_param_dict` merges these; the order is also the parameter order of
         checkpoints written before that merge.
     """
+    # EoDT fork: EoDT has no Joiner backbone and no decoder (EODT_SPEC.md §8, point 1)
+    from rfdetr.models.eodt import EoDT, build_eodt_param_dicts
+
+    if isinstance(model_without_ddp, EoDT):
+        return build_eodt_param_dicts(args, model_without_ddp)
+
     assert isinstance(model_without_ddp.backbone, Joiner)
     backbone = cast("Any", model_without_ddp.backbone[0])
     backbone_named_param_lr_pairs = backbone.get_named_param_lr_pairs(args, prefix="backbone.0")

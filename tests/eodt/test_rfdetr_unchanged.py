@@ -8,6 +8,8 @@ read-only), and the two dumps must be identical.
 
 Covers:
 - ``build_model_from_config`` with an RF-DETR config: same state dict and same output on a fixed image.
+- ``build_criterion_from_config``: same loss weights and same losses on fixed targets.
+- ``get_param_dict``: same optimizer groups (learning rate, weight decay and parameters of each group).
 """
 
 import os
@@ -53,8 +55,8 @@ def _dump_both(output_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     return dumps[0], dumps[1]
 
 
-def _assert_identical(fork: Any, reference: Any, path: str = "outputs") -> None:
-    """Compare nested dicts, lists and tensors exactly."""
+def _assert_identical(fork: Any, reference: Any, path: str) -> None:
+    """Compare nested dicts, lists, tensors and plain values exactly."""
     assert type(fork) is type(reference), path
     if isinstance(fork, dict):
         assert fork.keys() == reference.keys(), path
@@ -64,17 +66,26 @@ def _assert_identical(fork: Any, reference: Any, path: str = "outputs") -> None:
         assert len(fork) == len(reference), path
         for index, (fork_item, reference_item) in enumerate(zip(fork, reference)):
             _assert_identical(fork_item, reference_item, f"{path}[{index}]")
-    else:
+    elif isinstance(fork, torch.Tensor):
         assert torch.equal(fork, reference), path
+    else:
+        assert fork == reference, path
 
 
 @pytest.mark.skipif(not REFERENCE.exists(), reason=f"{REFERENCE} not found")
-def test_build_model_from_config_unchanged(tmp_path: Path) -> None:
-    """RF-DETR Medium from build_model_from_config: identical weights and output in the fork and in ref-rfdetr."""
+def test_rfdetr_unchanged(tmp_path: Path) -> None:
+    """RF-DETR Medium: identical weights, outputs, losses and optimizer groups in the fork and in ref-rfdetr."""
     fork, reference = _dump_both(tmp_path)
 
     assert fork["state_dict"].keys() == reference["state_dict"].keys()
     for key in fork["state_dict"]:
         assert torch.equal(fork["state_dict"][key], reference["state_dict"][key]), key
     assert set(fork["outputs"]) == {"pred_logits", "pred_boxes", "aux_outputs", "enc_outputs"}
-    _assert_identical(fork["outputs"], reference["outputs"])
+    _assert_identical(fork["outputs"], reference["outputs"], "outputs")
+    # 4 decoder layers: aux weights _0 to _2, plus the first stage
+    assert {"loss_ce_2", "loss_ce_enc"} <= set(fork["weight_dict"])
+    _assert_identical(fork["weight_dict"], reference["weight_dict"], "weight_dict")
+    assert {"loss_ce", "loss_ce_2", "loss_ce_enc"} <= set(fork["loss_dict"])
+    _assert_identical(fork["loss_dict"], reference["loss_dict"], "loss_dict")
+    assert len(fork["param_groups"]) > 1
+    _assert_identical(fork["param_groups"], reference["param_groups"], "param_groups")
