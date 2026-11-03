@@ -4,5 +4,6 @@
 """EoDT model subpackage."""
 
 from rfdetr.models.eodt.backbone import EoDTBackbone
+from rfdetr.models.eodt.model import EoDT
 
-__all__ = ["EoDTBackbone"]
+__all__ = ["EoDT", "EoDTBackbone"]
