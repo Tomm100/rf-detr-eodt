@@ -11,7 +11,7 @@
 | Risoluzione | 576 px, uguale per tutte le taglie, configurabile | [DA CONFERMARE] | §3.1 |
 | Projector | rimosso | deciso | §1 |
 | Decoder | rimosso: query negli ultimi L2 blocchi del ViT | deciso | §3.2, §3.4 |
-| L2 | 3 per ViT-S e ViT-B, 4 per ViT-L (come EoMT), configurabile | deciso, da ablare | §3.2 |
+| L2 | 3 per ViT-S e ViT-B, 4 per ViT-L (come EoMT); **obbligatorio in ogni YAML**, nessun default nel codice | deciso, da ablare | §3.2 |
 | Query | due modalità, scelte da configurazione: `learned` (come EoMT) e `selection` (come RF-DETR) | deciso | §3.3 |
 | Numero di query | Q = 300, configurabile | deciso | §3.3 |
 | Box | `learned`: box assoluto; `selection`: Δ sempre rispetto a b0 | deciso | §3.5 |
@@ -28,7 +28,8 @@
 | NAS | no | deciso | §7 |
 | Objects365 | no | deciso | §7 |
 | Dataset | COCO 2017: train (118.287) per il training, val (5.000) per la valutazione | deciso | §6 |
-| Configurazione | un file YAML per esperimento, nessun valore scritto nel codice | deciso | §3.7 |
+| Configurazione | un file YAML per esperimento, letto da un loader in `eodt/` (non `rfdetr fit`); nessun valore scritto nel codice | deciso | §3.7 |
+| Multi-scala | spento per EoDT e baseline (`multi_scale: off`): ingresso quadrato fisso | deciso | §7.1 |
 | Git | l'agente non fa commit: li faccio io a mano | deciso | §2 |
 | Logging | W&B offline sul nodo di calcolo, sincronizzato dal nodo di login; stessa run tra job ripresi | deciso | §7.3 |
 
@@ -79,7 +80,7 @@ Lo schema mostra la modalità `selection`. Con la modalità `learned` le query n
 
 ### 3.2 Divisione L1 / L2
 
-- L2 = numero di blocchi finali che contengono le query. **Default: 3 per ViT-S e ViT-B, 4 per ViT-L**, come in EoMT. Configurabile, perché è oggetto di ablazione.
+- L2 = numero di blocchi finali che contengono le query. **Valori di partenza: 3 per ViT-S e ViT-B, 4 per ViT-L**, come in EoMT. È oggetto di ablazione, quindi è **obbligatorio in ogni file YAML**: nessun default nel codice né tabella per taglia. Se manca, la configurazione dà errore. I valori di partenza sono scritti nei YAML di partenza.
 - L1 = blocchi totali − L2. Nei blocchi L1 entrano solo i token del ViT (CLS, registri e patch).
 
 ### 3.3 Query: due modalità
@@ -153,13 +154,15 @@ Il test del passo 1 e quello del passo 4 (§9) vanno ripetuti anche con ViT-B e 
 
 **Regola generale:** ogni valore che può cambiare tra un esperimento e l'altro è un parametro di configurazione, mai un valore scritto nel codice. Ogni esperimento corrisponde a un file di configurazione, così da poter tenere traccia di cosa è stato lanciato.
 
-- **Formato:** lo stesso di RF-DETR. Il comando `rfdetr` (`src/rfdetr/training/cli.py`, basato su `LightningCLI`) legge file YAML come quelli in `configs/` (per esempio `configs/rfdetr_medium.yaml`). EoDT usa lo stesso meccanismo, con `EoDTConfig` come `ModelConfig` (§8 punto 2).
+- **Formato:** lo stesso dei YAML di RF-DETR in `configs/` (`model_config` e `train_config` con `class_path` e `init_args`), con `EoDTConfig` come `ModelConfig` (§8 punto 2).
+- **Lettura:** un loader in `src/rfdetr/models/eodt/` (pyyaml), **non** il comando `rfdetr fit`. Motivo: `rfdetr fit` (`LightningCLI`) richiede `jsonargparse`, non installato, e soprattutto costruisce il `Trainer` senza passare da `build_trainer`, quindi epoch, gradient clipping, precisione, EMA, valutazione COCO e checkpoint di `TrainConfig` non verrebbero applicati. Il training usa `build_trainer` + `RFDETRModelModule` + `RFDETRDataModule`, come `RFDETR.train()`. Lo stesso loader vale per la baseline.
 - **Dove:** `configs/eodt/` per EoDT e `configs/baseline/` per la baseline, un file per esperimento, con un nome che dica cosa cambia (per esempio `eodt_vits_576_l2-3_learned.yaml`, `baseline_medium_nowin.yaml`).
 - **Parametri da esporre almeno:**
   - **modello EoDT:** backbone (che determina anche i registri: `…_reg4_dinov2` = 4 registri, nessun parametro separato), risoluzione, L2, numero di query, `query_mode` (`learned` / `selection`), numero di gruppi (`group_detr`: 1 = alternativa (a), > 1 = alternativa (b));
   - **baseline:** tutti quelli della §3.6;
-  - **training:** epoch, batch, learning rate (testa e backbone), decadimento per strati, weight decay, warm-up (§7), EMA, coefficienti delle loss, seed.
-- **Tracciabilità:** ogni run salva nella propria cartella di output una copia della configurazione completa usata, compresi i default. `LightningCLI` lo fa già (`config.yaml`): verificare che resti attivo. Nella stessa cartella vanno salvati anche il commit git del codice e le versioni di Python, PyTorch, CUDA e timm.
+  - **training:** epoch, batch, learning rate (testa e backbone), decadimento per strati, weight decay, warm-up (§7), EMA, `cls_loss_coef`, seed.
+  - **non esposti:** i coefficienti di box (5) e GIoU (2) e i costi del matcher (2, 5, 2) restano fissi ai valori di RF-DETR (`ModelDefaults`), identici per EoDT e baseline (§7.1). Si espongono solo se la rifinitura della §7.2 lo richiede, con un test di equivalenza con `ref-rfdetr`.
+- **Tracciabilità:** ogni run salva nella propria cartella di output una copia della configurazione completa usata, compresi i default. Senza `LightningCLI` non c'è un salvataggio automatico: lo fa il codice di training (passo 6). Nella stessa cartella vanno salvati anche il commit git del codice e le versioni di Python, PyTorch, CUDA e timm.
 - **Default:** i valori di §3, §5 e §7 sono i default delle configurazioni. Un esperimento li cambia solo nel proprio file YAML.
 - **Test:** per ogni parametro esposto, verificare che un valore diverso nel YAML arrivi davvero al modello (per esempio: con risoluzione 640 la griglia diventa 40×40; con L2 = 4 le query entrano un blocco prima).
 
@@ -205,6 +208,7 @@ La baseline è **RF-DETR riaddestrato con lo stesso training di EoDT**, senza Gr
   - un **warm-up** (`warmup_epochs`);
   - un **learning rate che scende verso la fine** (`lr_scheduler: "cosine"`), così il training finisce in un punto stabile.
 - **Dataset:** COCO 2017, train (118.287 immagini); valutazione su val2017 (§6).
+- **Multi-scala spento** per EoDT e baseline: `multi_scale: off` e `square_resize_div_64: true` in ogni YAML, e il builder di EoDT rifiuta valori diversi. Motivo: EoDT ha un ingresso quadrato fisso (pos embed per una sola griglia), come EoMT. È una differenza rispetto alla ricetta originale di RF-DETR (multi-scala per batch, per la Medium da 416 a 736 px), uguale per entrambi i modelli e da dichiarare nella tesi. Il multi-scala per entrambi resta una possibile rifinitura della §7.2, con `dynamic_img_size` di timm in EoDT.
 - **Augmentation:** pipeline di torchvision, fissata esplicitamente con `augmentation_backend: torchvision` in ogni YAML. Albumentations non è installato (§11); fissarlo evita che il comportamento cambi a seconda dei pacchetti presenti.
 - **Niente NAS e niente Group-DETR** nella prima versione.
 - **Niente pre-training su Objects365** (deciso): EoDT e baseline partono entrambi da DINOv2 e si addestrano solo su COCO.
@@ -215,7 +219,7 @@ La baseline è **RF-DETR riaddestrato con lo stesso training di EoDT**, senza Gr
 |---|---|---|---|---|
 | Learning rate | 1e-4 | 1e-4 | 1e-4 | deciso |
 | Learning rate del backbone | 1,5e-4 | 1e-4 | 1,5e-4 | deciso |
-| Decadimento per strati | 0,8 | 0,8 | 0,8 | deciso |
+| Decadimento per strati | 0,8 | 0,8 | 0,8, con la formula sotto la tabella | deciso |
 | Weight decay | 1e-4 | 0,05 | 1e-4 | deciso |
 | Gradient clipping | 0,1 | 0,01 | 0,1 | deciso |
 | Loss, matcher, augmentation | RF-DETR | — | RF-DETR | deciso |
@@ -226,6 +230,12 @@ La baseline è **RF-DETR riaddestrato con lo stesso training di EoDT**, senza Gr
 | Epoch | 100 | 12 | fisse, uguali per tutti | [DA DECIDERE] dopo la prima run |
 | Batch totale | 4 per GPU | 16 | — | [DA DECIDERE] in base alla memoria |
 | Checkpoint riportato | migliore su val (`checkpoint_best_total.pth`) | finale | proposta: finale con EMA (`last_ema.pth`), migliore registrato solo come controllo | [DA DECIDERE] |
+
+**Learning rate e weight decay del ViT: identici alla baseline**, tensore per tensore (formula di RF-DETR: `get_dinov2_lr_decay_rate`, `get_dinov2_weight_decay_rate`, `lr_component_decay`²):
+- learning rate = `lr_encoder` · 0,8^(n + 1 − id) · 0,7², con n = profondità + 1 (13 per ViT-S e ViT-B, 25 per ViT-L) e id = 0 per gli embedding (patch, pos, CLS, registri), i + 1 per il blocco i, n + 1 per la norm finale. Quindi ultimo blocco ×0,8², embedding ×0,8¹⁴;
+- **i blocchi L2 seguono la stessa formula degli altri blocchi**: sono blocchi pre-addestrati di DINOv2, non strati nuovi;
+- weight decay 0 su embedding, bias e norm; `weight_decay` sugli altri pesi, layer scale compreso;
+- query, `class_embed` e `bbox_embed` (nuovi): learning rate `lr` = 1e-4, come query e teste di RF-DETR.
 
 Tutti i valori si impostano nei file YAML (§3.7). Il checkpoint riportato, qualunque sia, deve seguire la stessa regola per EoDT e baseline.
 
