@@ -195,7 +195,7 @@ La baseline è **RF-DETR riaddestrato con lo stesso training di EoDT**, senza Gr
 
 ## 6. Valutazione
 
-- **Accuratezza:** AP COCO sul validation set 2017 (5.000 immagini), con la valutazione di RF-DETR. Il test set non si usa (non ha etichette pubbliche). Per COCO, anche la fase `test` di RF-DETR ricade su val2017. Quale checkpoint si valuta è indicato in §7.1.
+- **Accuratezza:** AP COCO sul validation set 2017 (5.000 immagini), con la valutazione di RF-DETR e il **protocollo COCO standard: al massimo 100 detection per immagine** (`eval_max_dets: 100` nel YAML; il default di RF-DETR è 500). Uguale per EoDT e baseline. Prima del confronto con la Tabella 5 di RF-DETR (§7.2) va verificato con quale valore sono calcolati i numeri del paper. Il test set non si usa (non ha etichette pubbliche). Per COCO, anche la fase `test` di RF-DETR ricade su val2017. Quale checkpoint si valuta è indicato in §7.1.
 - **Velocità:** latenza, con lo stesso protocollo per tutti i modelli: stessa GPU, stessa precisione, batch 1, modelli compilati. In più: memoria, numero di parametri e FLOPs.
 - **Script di benchmark:** uno solo, usato per EoDT, per la baseline e per i checkpoint pubblicati di RF-DETR. Si implementa alla fine (§9 passo 13).
 
@@ -326,6 +326,8 @@ Le versioni sono fissate in `requirements-eodt.txt` (generato da `requirements-e
 | | PC (test, passi 1-5) | Leonardo (training) |
 |---|---|---|
 | Cartella | `C:/dev/tesi/rf-detr-eodt` | `/leonardo_work/IscrC_EoDT/tcentonz/rf-detr-eodt` |
+| Dati | `C:/dev/tesi/data/coco_mini` (20 immagini, overfit) | COCO 2017 completo in `/leonardo_scratch/fast/IscrC_EoDT/coco` (`$FAST`: veloce, nessuna cancellazione per inattività) |
+| Output | — | `/leonardo_work/IscrC_EoDT/tcentonz/runs/<nome esperimento>` |
 | Ambiente | `.venv` (uv) | `/leonardo_work/IscrC_EoDT/tcentonz/eodt-venv` |
 | Attivazione | `.venv\Scripts\python.exe ...` | `module load python cuda && source /leonardo_work/IscrC_EoDT/tcentonz/eodt-venv/bin/activate` |
 | GPU | GTX 1650, 4 GB, **niente bf16** (fp32 o fp16) | 4× A100 64 GB per nodo |
