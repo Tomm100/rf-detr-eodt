@@ -28,6 +28,7 @@ from torch import Tensor, nn
 
 if TYPE_CHECKING:
     from rfdetr.config import ModelConfig, TrainConfig
+    from rfdetr.models.eodt import EoDT
 
 from rfdetr.models._defaults import MODEL_DEFAULTS, ModelDefaults
 from rfdetr.models._types import BuilderArgs
@@ -938,7 +939,7 @@ def build_model_from_config(
     model_config: "ModelConfig",
     train_config: "TrainConfig" | None = None,
     defaults: ModelDefaults = MODEL_DEFAULTS,
-) -> LWDETR:
+) -> LWDETR | EoDT:
     """Build an LWDETR model directly from a ModelConfig.
 
     A config-native alternative to ``build_model(build_namespace(mc, tc))``. Constructs the namespace internally from
@@ -956,12 +957,18 @@ def build_model_from_config(
         defaults: Hardcoded architectural constants. Defaults to ``MODEL_DEFAULTS``.
 
     Returns:
-        Fully initialised LWDETR model.
+        Fully initialised LWDETR model, or EoDT for an ``EoDTConfig``.
 
     Raises:
         ValueError: If ``defaults`` request ``encoder_only`` or ``backbone_only``,
             which would make the return type differ from ``LWDETR``.
     """
+    # EoDT fork: an EoDTConfig builds an EoDT instead of an LWDETR (EODT_SPEC.md §8, point 2)
+    from rfdetr.models.eodt import EoDTConfig, build_eodt_from_config
+
+    if isinstance(model_config, EoDTConfig):
+        return build_eodt_from_config(model_config, train_config)
+
     from rfdetr._namespace import _namespace_from_configs
 
     if defaults.encoder_only or defaults.backbone_only:

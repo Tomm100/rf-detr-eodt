@@ -22,6 +22,7 @@ from torch import Tensor, nn
 
 from rfdetr.models.eodt.backbone import EoDTBackbone
 from rfdetr.models.math import MLP
+from rfdetr.utilities.tensors import NestedTensor
 
 
 class EoDT(nn.Module):
@@ -64,17 +65,23 @@ class EoDT(nn.Module):
         # absolute and there is no reference box. With query_mode = "selection" (step 11) the last layer
         # must be zero-initialized as in LWDETR, because there the MLP predicts a delta with respect to b0.
 
-    def forward(self, x: Tensor) -> dict[str, Any]:
+    def forward(
+        self, samples: NestedTensor | Tensor, targets: list[dict[str, Tensor]] | None = None
+    ) -> dict[str, Any]:
         """Predict classes and boxes after every L2 block.
 
         Args:
-            x: Normalized images of shape ``[B, 3, resolution, resolution]``.
+            samples: Normalized images of shape ``[B, 3, resolution, resolution]``, alone or in the
+                ``NestedTensor`` of RF-DETR's dataloader. Its padding mask is ignored: the input is a square
+                resize without padding (``build_eodt_from_config`` rejects multi-scale and non-square resize).
+            targets: Ignored. Accepted because ``RFDETRModelModule.training_step`` passes them to the model.
 
         Returns:
             ``pred_logits`` ``[B, Q, num_classes]`` and ``pred_boxes`` ``[B, Q, 4]`` (cxcywh in [0, 1])
             from the last L2 block, and ``aux_outputs`` with the same two keys for the other L2 blocks,
             first to second-to-last. No ``enc_outputs`` with learned queries.
         """
+        x = samples.tensors if isinstance(samples, NestedTensor) else samples
         tokens = self.backbone.forward_l1(x)
         queries = self.query_feat.weight[None].expand(x.shape[0], -1, -1)
         query_states, _ = self.backbone.forward_l2(tokens, queries)
