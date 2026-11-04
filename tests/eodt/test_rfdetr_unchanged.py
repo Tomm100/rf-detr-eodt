@@ -6,7 +6,8 @@
 ``rfdetr_reference.py`` runs in two subprocesses, one on the fork and one on ``ref-rfdetr`` (same commit,
 read-only), and the two dumps must be identical.
 
-Covers:
+Covers, on RF-DETR Medium (random weights) and RF-DETR Base (DINOv2 loaded from Hugging Face at patch 14, the code
+path next to the fix of ``dinov2.py`` in step 8a):
 - ``build_model_from_config`` with an RF-DETR config: same state dict and same output on a fixed image.
 - ``build_criterion_from_config``: same loss weights and same losses on fixed targets.
 - ``get_param_dict``: same optimizer groups (learning rate, weight decay and parameters of each group).
@@ -20,13 +21,15 @@ from typing import Any
 
 import pytest
 import torch
+from huggingface_hub import hf_hub_download
+from safetensors.torch import load_file
 
 FORK = Path(__file__).resolve().parents[2]
 REFERENCE = FORK.parent / "ref-rfdetr"
 SCRIPT = Path(__file__).with_name("rfdetr_reference.py")
 
 
-def _dump_both(output_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+def _dump_both(config_name: str, output_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run the reference script on the fork and on ref-rfdetr, in parallel, and load the two dumps.
 
     The two runs are independent and most of their time is spent importing ``rfdetr``.
@@ -37,7 +40,7 @@ def _dump_both(output_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
         # PYTHONPATH comes before the editable install of the fork; no bytecode, so ref-rfdetr stays untouched
         env = {**os.environ, "PYTHONPATH": str(source_root / "src"), "PYTHONDONTWRITEBYTECODE": "1"}
         process = subprocess.Popen(
-            [sys.executable, str(SCRIPT), str(output_file)],
+            [sys.executable, str(SCRIPT), config_name, str(output_file)],
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -73,19 +76,27 @@ def _assert_identical(fork: Any, reference: Any, path: str) -> None:
 
 
 @pytest.mark.skipif(not REFERENCE.exists(), reason=f"{REFERENCE} not found")
-def test_rfdetr_unchanged(tmp_path: Path) -> None:
-    """RF-DETR Medium: identical weights, outputs, losses and optimizer groups in the fork and in ref-rfdetr."""
-    fork, reference = _dump_both(tmp_path)
+@pytest.mark.parametrize(("config_name", "dec_layers"), [("medium", 4), ("base", 3)])
+def test_rfdetr_unchanged(config_name: str, dec_layers: int, tmp_path: Path) -> None:
+    """Identical weights, outputs, losses and optimizer groups in the fork and in ref-rfdetr."""
+    fork, reference = _dump_both(config_name, tmp_path)
 
     assert fork["state_dict"].keys() == reference["state_dict"].keys()
     for key in fork["state_dict"]:
         assert torch.equal(fork["state_dict"][key], reference["state_dict"][key]), key
     assert set(fork["outputs"]) == {"pred_logits", "pred_boxes", "aux_outputs", "enc_outputs"}
     _assert_identical(fork["outputs"], reference["outputs"], "outputs")
-    # 4 decoder layers: aux weights _0 to _2, plus the first stage
-    assert {"loss_ce_2", "loss_ce_enc"} <= set(fork["weight_dict"])
+    # one aux weight per decoder layer but the last (_0 to _{dec_layers - 2}), plus the first stage
+    last_aux = f"loss_ce_{dec_layers - 2}"
+    assert {last_aux, "loss_ce_enc"} <= set(fork["weight_dict"])
+    assert f"loss_ce_{dec_layers - 1}" not in fork["weight_dict"]
     _assert_identical(fork["weight_dict"], reference["weight_dict"], "weight_dict")
-    assert {"loss_ce", "loss_ce_2", "loss_ce_enc"} <= set(fork["loss_dict"])
+    assert {"loss_ce", last_aux, "loss_ce_enc"} <= set(fork["loss_dict"])
     _assert_identical(fork["loss_dict"], reference["loss_dict"], "loss_dict")
     assert len(fork["param_groups"]) > 1
     _assert_identical(fork["param_groups"], reference["param_groups"], "param_groups")
+    if config_name == "base":
+        # the comparison above covered pretrained DINOv2 weights, not random ones
+        checkpoint = load_file(hf_hub_download("facebook/dinov2-small", "model.safetensors"))
+        key = "encoder.layer.0.attention.attention.query.weight"
+        assert torch.equal(fork["state_dict"][f"backbone.0.encoder.encoder.{key}"], checkpoint[key])

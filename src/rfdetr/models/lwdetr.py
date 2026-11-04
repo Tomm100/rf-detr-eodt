@@ -957,14 +957,15 @@ def build_model_from_config(
         defaults: Hardcoded architectural constants. Defaults to ``MODEL_DEFAULTS``.
 
     Returns:
-        Fully initialised LWDETR model, or EoDT for an ``EoDTConfig``.
+        Fully initialised LWDETR model, or EoDT for an ``EoDTConfig``. For a ``BaselineConfig`` the LWDETR has the
+        pretrained DINOv2 weights resampled to its patch size.
 
     Raises:
         ValueError: If ``defaults`` request ``encoder_only`` or ``backbone_only``,
             which would make the return type differ from ``LWDETR``.
     """
     # EoDT fork: an EoDTConfig builds an EoDT instead of an LWDETR (EODT_SPEC.md §8, point 2)
-    from rfdetr.models.eodt import EoDTConfig, build_eodt_from_config
+    from rfdetr.models.eodt import BaselineConfig, EoDTConfig, adapt_baseline, build_eodt_from_config
 
     if isinstance(model_config, EoDTConfig):
         return build_eodt_from_config(model_config, train_config)
@@ -986,6 +987,9 @@ def build_model_from_config(
     assert isinstance(model, LWDETR), (
         "build_model() returned a non-LWDETR result even though encoder_only/backbone_only were False."
     )
+    # EoDT fork: the baseline gets the pretrained DINOv2 weights at its patch size (EODT_SPEC.md §8, point 4)
+    if isinstance(model_config, BaselineConfig):
+        adapt_baseline(model, model_config)
     return model
 
 

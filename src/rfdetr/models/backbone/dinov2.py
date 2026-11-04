@@ -157,6 +157,10 @@ class DinoV2(nn.Module):
 
             dino_config["return_dict"] = False
             dino_config["out_features"] = [f"stage{i}" for i in out_feature_indexes]
+            # EoDT fork: the configs with registers also pin out_indices ([12]), which disagrees with out_features
+            # as soon as more than one stage is exported; drop it so that it is derived from out_features
+            # (EODT_SPEC.md §8, point 4)
+            dino_config.pop("out_indices", None)
             dino_config["drop_path_rate"] = drop_path_rate
 
             implied_resolution = positional_encoding_size * patch_size

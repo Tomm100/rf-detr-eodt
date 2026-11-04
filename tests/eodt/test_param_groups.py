@@ -29,6 +29,7 @@ from rfdetr.config import ModelConfig, RFDETRMediumConfig, TrainConfig
 from rfdetr.models.eodt import EoDTConfig
 from rfdetr.models.lwdetr import build_model_from_config
 from rfdetr.training.param_groups import get_param_dict
+from tests.eodt.vit_names import eodt_vit_name
 
 # TrainConfig defaults, the starting recipe of §7.1
 LR = 1e-4
@@ -42,18 +43,7 @@ FINAL_NORM = {"norm.weight", "norm.bias"}
 NORMS = {"norm1", "norm2", "norm"}  # module names of the LayerNorms in the timm ViT
 HEAD_AND_QUERIES = ("query_feat.", "class_embed.", "bbox_embed.")
 
-# Hugging Face DINOv2 names of the baseline (after this prefix) -> timm names of EoDT, first match wins
-_BASELINE_VIT_PREFIX = "backbone.0.encoder.encoder."
-_BASELINE_TO_EODT = [
-    (r"^embeddings\.cls_token$", "cls_token"),
-    (r"^embeddings\.position_embeddings$", "pos_embed"),
-    (r"^embeddings\.patch_embeddings\.projection\.", "patch_embed.proj."),
-    (r"^encoder\.layer\.(\d+)\.attention\.attention\.(query|key|value)\.", r"blocks.\1.attn.qkv."),
-    (r"^encoder\.layer\.(\d+)\.attention\.output\.dense\.", r"blocks.\1.attn.proj."),
-    (r"^encoder\.layer\.(\d+)\.layer_scale(\d)\.lambda1$", r"blocks.\1.ls\2.gamma"),
-    (r"^encoder\.layer\.(\d+)\.", r"blocks.\1."),  # norm1, norm2, mlp.fc1, mlp.fc2
-    (r"^layernorm\.", "norm."),
-]
+_BASELINE_VIT_PREFIX = "backbone.0.encoder.encoder."  # Hugging Face DINOv2 of the baseline, see vit_names.py
 
 
 def _train_config(**overrides: Any) -> TrainConfig:
@@ -183,12 +173,7 @@ def test_same_as_baseline() -> None:
         if not baseline_name.startswith("backbone.0.encoder.") or baseline_name.endswith("mask_token"):
             continue  # the projector, the decoder and the heads are not part of the ViT
         assert baseline_name.startswith(_BASELINE_VIT_PREFIX), baseline_name
-        for pattern, replacement in _BASELINE_TO_EODT:
-            vit_name, matched = re.subn(pattern, replacement, baseline_name.removeprefix(_BASELINE_VIT_PREFIX))
-            if matched:
-                break
-        assert matched, f"no EoDT counterpart for {baseline_name}"
-        eodt_name = f"backbone.vit.{vit_name}"
+        eodt_name = f"backbone.vit.{eodt_vit_name(baseline_name.removeprefix(_BASELINE_VIT_PREFIX))}"
         assert eodt_groups[eodt_name] == baseline_group, f"{baseline_name} -> {eodt_name}"
         compared.add(eodt_name)
 

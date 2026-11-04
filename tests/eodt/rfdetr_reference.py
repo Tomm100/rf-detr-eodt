@@ -1,14 +1,14 @@
 # ------------------------------------------------------------------------
 # EoDT: encoder-only detection on top of RF-DETR
 # ------------------------------------------------------------------------
-"""Dump an RF-DETR Medium built from its configuration, to compare the fork with ref-rfdetr.
+"""Dump an RF-DETR model built from one of its original configurations, to compare the fork with ref-rfdetr.
 
 Run by ``test_rfdetr_unchanged.py`` in a subprocess whose ``PYTHONPATH`` points to the ``src`` folder of one
 of the two source trees. It uses only RF-DETR's own API, so it runs on both.
 
 Usage::
 
-    python rfdetr_reference.py OUTPUT_FILE
+    python rfdetr_reference.py {medium,base} OUTPUT_FILE
 """
 
 import sys
@@ -18,17 +18,21 @@ import torch
 
 import rfdetr
 from rfdetr._namespace import _namespace_from_configs
-from rfdetr.config import RFDETRMediumConfig, TrainConfig
+from rfdetr.config import ModelConfig, RFDETRBaseConfig, RFDETRMediumConfig, TrainConfig
 from rfdetr.models.lwdetr import build_criterion_from_config, build_model_from_config
 from rfdetr.training.param_groups import get_param_dict
 
+# Original configurations without an RF-DETR checkpoint:
+# - medium: patch 16, so RF-DETR does not load DINOv2 and the weights are random (nothing is downloaded);
+# - base: patch 14 and DINOv2's 37 x 37 grid, so RF-DETR loads facebook/dinov2-small from Hugging Face.
+CONFIGS: dict[str, type[ModelConfig]] = {"medium": RFDETRMediumConfig, "base": RFDETRBaseConfig}
 
-def main(output_file: str) -> None:
-    """Build RF-DETR Medium with random weights and save model, outputs, losses and optimizer groups."""
+
+def main(config_name: str, output_file: str) -> None:
+    """Build an original RF-DETR configuration and save model, outputs, losses and optimizer groups."""
     warnings.simplefilter("ignore")  # pretrain_weights=None warns that the model starts from scratch
     torch.manual_seed(0)
-    # patch 16: the DINOv2 weights are not loaded, so nothing is downloaded and the weights are random
-    model_config = RFDETRMediumConfig(pretrain_weights=None, device="cpu")
+    model_config = CONFIGS[config_name](pretrain_weights=None, device="cpu")
     train_config = TrainConfig(dataset_dir=".", output_dir=".")
     model = build_model_from_config(model_config, train_config).eval()
     criterion, _ = build_criterion_from_config(model_config, train_config)
@@ -66,4 +70,4 @@ def main(output_file: str) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1], sys.argv[2])
