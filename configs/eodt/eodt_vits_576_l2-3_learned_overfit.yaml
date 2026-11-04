@@ -3,6 +3,10 @@
 # recipe of §7.1 are unchanged; only the keys marked "overfit:" differ (checked by tests/eodt/test_overfit_yaml.py).
 # Launched by scripts/eodt/overfit.py, not part of the test suite.
 #
+# Second attempt. The first one (120 epochs = 600 steps, warmup_epochs 10, evaluation every epoch, output in
+# output/eodt_vits_576_l2-3_learned_overfit) stopped at mAP 50:95 0.795 and AP50 0.819, still rising, while one
+# image alone reached 1.0 with the same recipe: same recipe again, four times longer.
+#
 # Written as the configurations hold them: "off" between quotes (bare off is the boolean false) and floats
 # with a dot (pyyaml reads 1e-4 as a string). TrainConfig would convert both, but the tests compare file and
 # configuration value by value.
@@ -24,7 +28,7 @@ model:
     init_args:
       dataset_file: coco
       dataset_dir: C:/dev/tesi/data/coco_mini  # overfit: 20 val2017 images, the same in train and val
-      output_dir: C:/dev/tesi/rf-detr-eodt/output/eodt_vits_576_l2-3_learned_overfit  # overfit: git-ignored
+      output_dir: C:/dev/tesi/rf-detr-eodt/output/eodt_vits_576_l2-3_learned_overfit_2400steps  # overfit: git-ignored
       # input and augmentation (§7.0)
       multi_scale: "off"
       square_resize_div_64: true
@@ -39,8 +43,8 @@ model:
       weight_decay: 1.0e-4
       clip_max_norm: 0.1
       lr_scheduler: cosine
-      warmup_epochs: 10  # overfit: 50 steps, 1/12 of the run as on COCO
-      epochs: 120  # overfit: 600 steps of 5 per epoch
+      warmup_epochs: 40  # overfit: 200 steps, 1/12 of the run as on COCO
+      epochs: 480  # overfit: 2400 steps of 5 per epoch
       batch_size: 4  # 20 images = 5 batches: every image once per epoch, sampled without replacement
       grad_accum_steps: 1
       cls_loss_coef: 1.0
@@ -52,7 +56,8 @@ model:
       # detections per image. The same for EoDT and baseline
       eval_max_dets: 100
       eval_base_model: true  # overfit: evaluate the trained model as well as the EMA
-      checkpoint_interval: 120  # overfit: one archive checkpoint instead of twelve
+      eval_interval: 4  # overfit: 120 evaluations over the 480 epochs, the last one included
+      checkpoint_interval: 480  # overfit: one archive checkpoint instead of 48
       # hardware (local PC)
       devices: 1  # overfit: one GPU
       num_nodes: 1

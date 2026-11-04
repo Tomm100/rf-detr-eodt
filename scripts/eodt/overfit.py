@@ -57,11 +57,11 @@ def read_metrics(path: Path) -> dict[int, dict[str, float]]:
 
 def plot_curves(metrics: dict[int, dict[str, float]], path: Path) -> None:
     """Plot total loss, loss terms and mAP of the trained model and of the EMA per epoch."""
-    epochs = sorted(metrics)
-    x = [epoch + 1 for epoch in epochs]
 
-    def series(key: str) -> list[float]:
-        return [metrics[epoch].get(key, math.nan) for epoch in epochs]
+    def series(key: str) -> tuple[list[int], list[float]]:
+        """Epochs (1-based) that logged ``key`` and its values: validation runs only every ``eval_interval``."""
+        epochs = [epoch for epoch in sorted(metrics) if key in metrics[epoch]]
+        return [epoch + 1 for epoch in epochs], [metrics[epoch][key] for epoch in epochs]
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.5), facecolor=SURFACE)
     for ax in axes:
@@ -70,19 +70,19 @@ def plot_curves(metrics: dict[int, dict[str, float]], path: Path) -> None:
         ax.spines[["top", "right"]].set_visible(False)
         ax.set_xlabel("epoch (5 steps each)")
 
-    axes[0].semilogy(x, series("train/loss"), color=SERIES[0], linewidth=2)
+    axes[0].semilogy(*series("train/loss"), color=SERIES[0], linewidth=2)
     axes[0].set_title("Training loss (weighted sum over the 3 L2 blocks)")
 
     for color, name in zip(SERIES, ("loss_ce", "loss_bbox", "loss_giou")):
-        axes[1].semilogy(x, series(f"train/{name}"), color=color, linewidth=2, label=name)
-        axes[1].semilogy(x, series(f"train/{name}_aux"), color=color, linewidth=1, linestyle="--")
+        axes[1].semilogy(*series(f"train/{name}"), color=color, linewidth=2, label=name)
+        axes[1].semilogy(*series(f"train/{name}_aux"), color=color, linewidth=1, linestyle="--")
     axes[1].axhline(MAX_LOSS_GIOU, color=MUTED, linewidth=1, linestyle=":")
     axes[1].set_title("Loss terms (solid: last L2 block, dashed: sum of the 2 others)")
     axes[1].legend(frameon=False)
 
     for color, prefix, label in ((SERIES[0], "val/", "model"), (SERIES[1], "val/ema_", "EMA")):
-        axes[2].plot(x, series(f"{prefix}mAP_50_95"), color=color, linewidth=2, label=f"{label} mAP 50:95")
-        axes[2].plot(x, series(f"{prefix}mAP_50"), color=color, linewidth=1.5, linestyle="--", label=f"{label} AP50")
+        axes[2].plot(*series(f"{prefix}mAP_50_95"), color=color, linewidth=2, label=f"{label} mAP 50:95")
+        axes[2].plot(*series(f"{prefix}mAP_50"), color=color, linewidth=1.5, linestyle="--", label=f"{label} AP50")
     for threshold in (MIN_MAP_50_95, MIN_MAP_50):
         axes[2].axhline(threshold, color=MUTED, linewidth=1, linestyle=":")
     axes[2].set_ylim(0, 1.02)
