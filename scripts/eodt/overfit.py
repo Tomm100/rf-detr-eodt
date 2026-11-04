@@ -1,11 +1,12 @@
 # ------------------------------------------------------------------------
 # EoDT: encoder-only detection on top of RF-DETR
 # ------------------------------------------------------------------------
-"""Overfit EoDT on the 20 images of coco_mini with RF-DETR's training stack (step 5 of EODT_SPEC.md §9).
+"""Overfit EoDT or the baseline on the 20 images of coco_mini with RF-DETR's training stack (EODT_SPEC.md §9).
 
-Usage::
+Step 5 for EoDT, step 8 for the baseline, with the same success criteria. Usage::
 
     .venv/Scripts/python.exe scripts/eodt/overfit.py configs/eodt/eodt_vits_576_l2-3_learned_overfit.yaml
+    .venv/Scripts/python.exe scripts/eodt/overfit.py configs/baseline/baseline_medium_nowin_overfit.yaml
 
 Trains with ``build_trainer`` + ``RFDETRModelModule`` + ``RFDETRDataModule``, as ``RFDETR.train()`` does, then writes
 to the ``output_dir`` of the YAML file:
@@ -41,7 +42,7 @@ from rfdetr.training.trainer import build_trainer
 # Success criteria of step 5, fixed before the run; all are read at the last epoch (see the plan of step 5)
 MIN_MAP_50 = 0.95
 MIN_MAP_50_95 = 0.85
-MAX_LOSS_GIOU = 0.10  # mean (1 - GIoU) of the matched boxes of the last L2 block
+MAX_LOSS_GIOU = 0.10  # mean (1 - GIoU) of the matched boxes of the last output (L2 block or decoder layer)
 
 # Categorical slots 1-3 of the dataviz reference palette, in order, and its neutral inks
 SERIES = ("#2a78d6", "#eb6834", "#1baf7a")
@@ -74,13 +75,13 @@ def plot_curves(metrics: dict[int, dict[str, float]], path: Path) -> None:
         ax.set_xlabel("epoch (5 steps each)")
 
     axes[0].semilogy(*series("train/loss"), color=SERIES[0], linewidth=2)
-    axes[0].set_title("Training loss (weighted sum over the 3 L2 blocks)")
+    axes[0].set_title("Training loss (weighted sum over all the outputs)")
 
     for color, name in zip(SERIES, ("loss_ce", "loss_bbox", "loss_giou")):
         axes[1].semilogy(*series(f"train/{name}"), color=color, linewidth=2, label=name)
         axes[1].semilogy(*series(f"train/{name}_aux"), color=color, linewidth=1, linestyle="--")
     axes[1].axhline(MAX_LOSS_GIOU, color=MUTED, linewidth=1, linestyle=":")
-    axes[1].set_title("Loss terms (solid: last L2 block, dashed: sum of the 2 others)")
+    axes[1].set_title("Loss terms (solid: last output, dashed: sum of the other outputs)")
     axes[1].legend(frameon=False)
 
     for color, prefix, label in ((SERIES[0], "val/", "model"), (SERIES[1], "val/ema_", "EMA")):
