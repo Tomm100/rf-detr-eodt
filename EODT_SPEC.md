@@ -12,7 +12,7 @@
 | Projector | rimosso | deciso | §1 |
 | Decoder | rimosso: query negli ultimi L2 blocchi del ViT | deciso | §3.2, §3.4 |
 | L2 | 3 per ViT-S e ViT-B, 4 per ViT-L (come EoMT); **obbligatorio in ogni YAML**, nessun default nel codice | deciso, da ablare | §3.2 |
-| Query | due modalità, scelte da configurazione: `learned` (come EoMT) e `selection` (come RF-DETR) | deciso | §3.3 |
+| Query | due modalità, scelte da configurazione. **Modello principale: `selection`** (stesso tipo di query della baseline RF-DETR, così l'ultimo anello della catena isola il solo decoder). **`learned` (come EoMT) è un'ablazione** | deciso | §3.3 |
 | Numero di query | Q = 300, configurabile | deciso | §3.3 |
 | Box | `learned`: box assoluto; `selection`: Δ sempre rispetto a b0 | deciso | §3.5 |
 | Testa | una sola, condivisa da tutti i blocchi L2; prima della testa la norm finale pre-addestrata del ViT (`vit.norm`), come EoMT | deciso | §3.5 |
@@ -112,7 +112,9 @@ Q è configurabile, default 300 (EoMT ne usa 200). Nella modalità `selection`, 
 
 **Inizializzazione dell'ultimo strato di `bbox_embed`:** dipende dalla modalità. In `learned` il box è assoluto: inizializzazione di default di `nn.Linear`, come DETR (con lo zero tutte le query partirebbero dallo stesso box). In `selection` il box è Δ rispetto a b0: **peso e bias a zero**, come RF-DETR, così all'inizio ogni query predice il proprio b0. Il bias di `class_embed` parte da una probabilità a priori di 0,01 in entrambe le modalità, costante nel codice come in `LWDETR`.
 
-> Ordine di implementazione: prima `learned`, che è più semplice e serve per la prima run e per il confronto con la baseline; `selection` si aggiunge dopo, quando la ricetta è fissata (§9, passo 11).
+> **Ruolo delle due modalità:** `selection` è il **modello principale** di EoDT: la baseline RF-DETR usa la query selection, quindi solo con `selection` il confronto "baseline senza projector → EoDT" cambia il solo decoder. `learned` è un'**ablazione** nello stile di EoMT (query imparate, come Mask2Former ed EoMT): mostra se un detector encoder-only ha bisogno della query selection. Con `learned` la convergenza è più lenta (overfit del passo 5).
+>
+> **Ordine di implementazione:** prima `learned` (più semplice, usata per verificare il modello e l'infrastruttura: passi 1-6), poi `selection` (passo 9), prima del confronto con la baseline.
 
 ### 3.4 Blocchi L2
 
@@ -287,7 +289,7 @@ I nodi di calcolo di Leonardo non hanno accesso a internet: W&B lavora **offline
 
 6. **Pesi delle aux loss:** `build_criterion_and_postprocessors` (`models/lwdetr.py`) costruisce i pesi delle loss intermedie con `range(args.dec_layers - 1)`. EoDT non ha decoder: servono **L2 − 1** pesi, uno per ogni blocco L2 tranne l'ultimo. Senza questa correzione le `aux_outputs` restano senza peso e la deep supervision sparisce **senza errori**. Va coperto da un test.
 7. **Numero di classi:** `EoDT(num_classes=...)` è il numero di uscite. Come in `build_model`, il costruttore che legge la configurazione passa `num_classes + 1`: per COCO `ModelConfig.num_classes = 90` → **91 uscite** (gli id COCO 1-90 sono usati direttamente come indici; sigmoid per classe, nessuna classe "nessun oggetto").
-8. **`query_mode` in `EoDTConfig`:** campo della configurazione già dal passo 4, per ora con il solo valore `learned`, così compare nei YAML delle prime run (passi 6, 9, 10). Il valore `selection` si aggiunge al passo 11.
+8. **`query_mode` in `EoDTConfig`:** campo della configurazione già dal passo 4, per ora con il solo valore `learned`, così compare nei YAML delle prime run (passo 6). Il valore `selection` si aggiunge al passo 9.
 
 Per i punti 4 e 5, proporre la soluzione meno invasiva.
 
@@ -305,15 +307,16 @@ Ogni passo si chiude **solo** quando il suo test passa. Poi l'agente si ferma: r
 | 3 | Query `learned` e testa | Formato dell'uscita come in §3.5, senza `enc_outputs`. Box in [0, 1]. |
 | 4 | Collegamento a criterion, training e configurazione YAML | Forward e backward su 2 immagini. Loss finita. **Gradiente non nullo su tutti i parametri addestrabili.** Il modello si costruisce da un file in `configs/eodt/`. |
 | 5 | **Overfit su 20 immagini** COCO, in locale | Dopo **2.400 step** (480 epoch, warm-up 40, valutazione ogni 4 epoch), sia per il modello sia per l'EMA: **AP50 ≥ 0,95** e **mAP 50:95 ≥ 0,85**; loss sempre finita; `loss_giou` dell'ultimo blocco ≤ 0,10. Soglie fissate prima del lancio. **Se non passa, ci si ferma e si fa debug: non si va avanti.** L'overfit si ripete poi su Leonardo (bf16, A100) come primo job del passo 6. **Esito (passo 5): PASS.** Con 600 step non bastava (mAP 0,795, convergenza lenta delle query `learned`; su 1 immagine mAP 1,0 dopo 215 step, nessun bug trovato); con 2.400 step: modello mAP 50:95 0,979 e AP50 0,988, EMA 0,977 e 0,988, `loss_giou` 0,013. |
-| 6 | Script per Leonardo e **prima run di verifica** su COCO (`learned`, ViT-S, ricetta di partenza §7.1) | Il run parte, la loss scende e l'AP sale, la valutazione gira a fine epoch, configurazione e commit salvati nella cartella di output (§3.7). La ripresa da checkpoint funziona (limite di 24 ore per job). Logging su W&B come in §7.3. Prima della run lunga, un **job di prova di 10-15 minuti** a risoluzione piena su più GPU (lo lancio io). **Non si modifica la ricetta in base a questa run.** Da risolvere prima della run, emersi al passo 4c: (1) **seed con DDP**: `seed_everything(seed + rank)` dà a ogni rank un seed diverso del `DistributedSampler`, quindi i 4 rank non si dividono il dataset (circa il 68% di immagini distinte per epoch, stima del subagent): va corretto, anche per la baseline, con un test; (2) query e teste si inizializzano prima del seed; (3) SLURM con `--ntasks-per-node=4` e `srun`; (4) pesi DINOv2 nella cache su `$WORK` e `HF_HUB_OFFLINE=1`; (5) RAM con 4×(7+7) worker; (6) un `output_dir` già usato non deve essere sovrascritto; (7) bf16 verificato nel job di prova. |
+| 6 | Script per Leonardo e **prima run di verifica** su COCO (`learned`, ViT-S, ricetta di partenza §7.1). Verifica l'infrastruttura e fa anche da prima run dell'ablazione `learned` | Il run parte, la loss scende e l'AP sale, la valutazione gira a fine epoch, configurazione e commit salvati nella cartella di output (§3.7). La ripresa da checkpoint funziona (limite di 24 ore per job). Logging su W&B come in §7.3. Prima della run lunga, un **job di prova di 10-15 minuti** a risoluzione piena su più GPU (lo lancio io). **Non si modifica la ricetta in base a questa run.** Da risolvere prima della run, emersi al passo 4c: (1) **seed con DDP**: `seed_everything(seed + rank)` dà a ogni rank un seed diverso del `DistributedSampler`, quindi i 4 rank non si dividono il dataset (circa il 68% di immagini distinte per epoch, stima del subagent): va corretto, anche per la baseline, con un test; (2) query e teste si inizializzano prima del seed; (3) SLURM con `--ntasks-per-node=4` e `srun`; (4) pesi DINOv2 nella cache su `$WORK` e `HF_HUB_OFFLINE=1`; (5) RAM con 4×(7+7) worker; (6) un `output_dir` già usato non deve essere sovrascritto; (7) bf16 verificato nel job di prova. |
 | | **Baseline** | |
 | 7 | **Decisione sulla baseline** con Niccolò (compito mio, non dell'agente): configurazione, finestre, quale run lanciare per prima | §5 aggiornata, [DA CONFERMARE] risolti, file YAML in `configs/baseline/`. |
 | 8 | Implementazione della baseline (§5, §8 punti 4 e 5): conversione DINOv2 14→16 con registri, opzione senza projector. **Il codice si può scrivere anche prima del passo 7**, perché risoluzione e layer del decoder sono solo valori nel YAML. | Caricamento DINOv2 a patch 16 con registri senza chiavi mancanti. Tutte le run della catena si costruiscono solo da YAML. **Test di equivalenza** tra il fork e `ref-rfdetr/` (stesso checkpoint, stessa immagine, output identico) sulla configurazione originale, per verificare che le modifiche non abbiano cambiato RF-DETR. Overfit su 20 immagini anche per la baseline. |
+| | **EoDT `selection` (modello principale)** | |
+| 9 | Query `selection` | Top-Q corretto. b0 senza gradiente. Con Δ = 0 il box è uguale a b0. `enc_outputs` presente. Il cambio di `query_mode` avviene solo da YAML. Ripetere i test 4 e 5 (compreso l'overfit su coco_mini con gli stessi criteri), e verificare che `learned` funzioni ancora. |
 | | **Confronto e ricetta** | |
-| 9 | **Due run insieme**: EoDT `learned` e baseline, ViT-S, stessa ricetta di partenza e stesse epoch | Entrambe completate, curve su W&B confrontabili (stesse metriche, stessi intervalli di valutazione). |
-| 10 | **Rifinitura della ricetta** (§7.2), guardando entrambe le run | Ogni modifica provata su EoDT e baseline. Ricetta finale scritta in §7.1, con l'elenco delle configurazioni provate. |
+| 10 | **Due run insieme**: EoDT `selection` e baseline, ViT-S, stessa ricetta di partenza e stesse epoch | Entrambe completate, curve su W&B confrontabili (stesse metriche, stessi intervalli di valutazione). |
+| 11 | **Rifinitura della ricetta** (§7.2), guardando entrambe le run | Ogni modifica provata su EoDT e baseline. Ricetta finale scritta in §7.1, con l'elenco delle configurazioni provate. La run `learned` (ablazione) si rifà con la ricetta finale. |
 | | **Resto di EoDT** | |
-| 11 | Query `selection` | Top-Q corretto. b0 senza gradiente. Con Δ = 0 il box è uguale a b0. `enc_outputs` presente. Il cambio di `query_mode` avviene solo da YAML. Ripetere i test 4 e 5, e verificare che `learned` funzioni ancora. |
 | 12 | Group-DETR, variante (b) | Attention mask: i patch non vedono le query, i gruppi non si vedono tra loro. Ripetere i test 4 e 5. |
 | 13 | Script di benchmark (§6) | Stessa misura su EoDT, baseline e un checkpoint pubblicato di RF-DETR. Risultati ripetibili tra due esecuzioni. |
 
