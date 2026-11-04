@@ -185,12 +185,12 @@ La baseline è **RF-DETR riaddestrato con lo stesso training di EoDT**, senza Gr
 |---|---|---|---|
 | RF-DETR | sì (2) | sì | sì |
 | senza finestre | no | sì | sì |
-| senza projector | no | no: il decoder legge l'uscita dell'ultimo blocco del ViT, portata a `hidden_dim` con un `Linear` | sì |
+| senza projector | no | no: il decoder legge l'uscita dell'ultimo blocco del ViT, portata a `hidden_dim` con `Linear` + `LayerNorm` | sì |
 | **EoDT** | no | no | no: query negli ultimi L2 blocchi |
 
 - **Tutte le run vanno riaddestrate**, compresa quella con le finestre: i training devono essere equivalenti (Niccolò).
 - **Configurazione:** **Medium di RF-DETR** sul ViT-S (deciso al passo 7): 576 px, 4 layer del decoder, 300 query. Niccolò ha indicato di partire da una configurazione di default di RF-DETR. Tutti i parametri del decoder (layer, dimensione nascosta, teste, punti) sono scritti esplicitamente nei YAML della baseline, così un cambio futuro (per esempio lo scaling a ViT-B e ViT-L, §3.6) richiede solo il YAML. `dim_feedforward` resta 2048, fisso come in tutte le taglie di RF-DETR.
-- **Senza projector:** il decoder legge **solo l'uscita dell'ultimo blocco** del ViT (`out_feature_indexes: [12]` per ViT-S), portata a `hidden_dim` con un `Linear`: si tolgono insieme la fusione dei 4 blocchi e il projector, cioè proprio ciò che EoDT elimina.
+- **Senza projector:** il decoder legge **solo l'uscita dell'ultimo blocco** del ViT (`out_feature_indexes: [12]` per ViT-S), portata a `hidden_dim` con **`Linear` + `LayerNorm`**: si tolgono insieme la fusione dei 4 blocchi e il projector, cioè proprio ciò che EoDT elimina. La `LayerNorm` resta perché il `MultiScaleProjector` di RF-DETR termina con una LayerNorm: senza, l'anello toglierebbe anche la normalizzazione dell'ingresso del decoder, e non si saprebbe quale delle due cose ha pesato. Così misura solo il contributo della fusione multi-scala. È la proiezione minima standard nei modelli tipo DETR.
 - In comune con EoDT: DINOv2 con 4 registri, patch 16 (§8 punto 4), risoluzione, `group_detr = 1`, niente NAS, niente Objects365, stessa ricetta e stesse epoch (§7).
 - **Latenza dell'RF-DETR originale:** si misura anche sui checkpoint pubblicati, senza riaddestrare (§6). Serve perché senza finestre la baseline è più lenta dell'originale, e confrontarsi solo con lei favorirebbe EoDT.
 
@@ -283,7 +283,7 @@ I nodi di calcolo di Leonardo non hanno accesso a internet: W&B lavora **offline
    - con `patch_size != 14` **i pesi pre-addestrati non vengono caricati**, perché la repo pubblica si aspetta un checkpoint RF-DETR già a patch 16. Serve una conversione 14→16 al caricamento (ricampionamento del patch embedding, come fa timm), altrimenti la baseline parte da pesi casuali;
    - `EncoderName` (`config.py`) prevede i registri solo per la taglia small: per ViT-B e ViT-L va esteso.
    - **la baseline con registri oggi non si costruisce** (verificato al passo 4b): con transformers 5.17, `encoder: dinov2_registers_windowed_small` dà `ValueError: out_features and out_indices should have the same length`, perché `dinov2_with_registers_small.json` contiene `out_indices` e `DinoV2.__init__` sovrascrive solo `out_features`. Va corretto al passo 8, con un test.
-5. **Baseline senza projector:** RF-DETR non ha un'opzione per togliere il projector. Serve un'opzione da configurazione che lo sostituisca con un `Linear` sull'uscita dell'ultimo blocco del ViT (§5).
+5. **Baseline senza projector:** RF-DETR non ha un'opzione per togliere il projector. Serve un'opzione da configurazione che lo sostituisca con `Linear` + `LayerNorm` sull'uscita dell'ultimo blocco del ViT (§5).
 
 6. **Pesi delle aux loss:** `build_criterion_and_postprocessors` (`models/lwdetr.py`) costruisce i pesi delle loss intermedie con `range(args.dec_layers - 1)`. EoDT non ha decoder: servono **L2 − 1** pesi, uno per ogni blocco L2 tranne l'ultimo. Senza questa correzione le `aux_outputs` restano senza peso e la deep supervision sparisce **senza errori**. Va coperto da un test.
 7. **Numero di classi:** `EoDT(num_classes=...)` è il numero di uscite. Come in `build_model`, il costruttore che legge la configurazione passa `num_classes + 1`: per COCO `ModelConfig.num_classes = 90` → **91 uscite** (gli id COCO 1-90 sono usati direttamente come indici; sigmoid per classe, nessuna classe "nessun oggetto").
