@@ -668,6 +668,11 @@ class COCOEvalCallback(Callback):
             trainer.callback_metrics[f"{split}/ema_mAP_50"] = ema_metrics[f"{pfx}map_50"].detach().cpu()
             trainer.callback_metrics[f"{split}/ema_mAP_75"] = ema_metrics[f"{pfx}map_75"].detach().cpu()
             trainer.callback_metrics[f"{split}/ema_mAR"] = ema_metrics[mar_key].detach().cpu()
+            # EoDT: AP per object size (COCO areas; -1 when the split has no object of that size)
+            for size in ("small", "medium", "large"):
+                value = ema_metrics[f"{pfx}map_{size}"]
+                pl_module.log(f"{split}/ema_mAP_{size}", value, logger=True, on_step=False, on_epoch=True)
+                trainer.callback_metrics[f"{split}/ema_mAP_{size}"] = value.detach().cpu()
             if self._use_segm_metrics:
                 pl_module.log(
                     f"{split}/ema_segm_mAP_50_95", ema_metrics["segm_map"], logger=True, on_step=False, on_epoch=True
@@ -891,6 +896,11 @@ class COCOEvalCallback(Callback):
         trainer.callback_metrics[f"{split}/mAP_50"] = metrics[f"{pfx}map_50"].detach().cpu()
         trainer.callback_metrics[f"{split}/mAP_75"] = metrics[f"{pfx}map_75"].detach().cpu()
         trainer.callback_metrics[f"{split}/mAR"] = metrics[mar_key].detach().cpu()
+        # EoDT: AP per object size (COCO areas; -1 when the split has no object of that size)
+        for size in ("small", "medium", "large"):
+            value = metrics[f"{pfx}map_{size}"]
+            pl_module.log(f"{split}/mAP_{size}", value, logger=True, on_step=False, on_epoch=True)
+            trainer.callback_metrics[f"{split}/mAP_{size}"] = value.detach().cpu()
 
         should_compute_ema, _ema_metrics = self._compute_and_log_ema_metrics(trainer, pl_module, split, pfx, mar_key)
 

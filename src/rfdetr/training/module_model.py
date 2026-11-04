@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import math
+import os
 import random
 import warnings
 from contextlib import nullcontext
@@ -566,6 +567,10 @@ class RFDETRModelModule(LightningModule):
             )
         if self.train_config.seed is not None:
             seed_everything(self.train_config.seed + self.global_rank, workers=True)
+            # EoDT fix: seed_everything also sets PL_GLOBAL_SEED, which Lightning uses as the seed of the
+            # DistributedSampler it builds after this hook. It must be the same on every rank, or each rank shuffles
+            # differently and the ranks do not split the dataset. The RNGs above stay different per rank.
+            os.environ["PL_GLOBAL_SEED"] = str(self.train_config.seed)
 
     def on_train_start(self) -> None:
         """Configure the CUDA graph runner, then normalize restored fused-optimizer state.
