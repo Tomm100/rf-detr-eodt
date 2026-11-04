@@ -1,6 +1,6 @@
 # EoDT — Specifica di implementazione
 
-> **Stato:** aggiornata il 31/10/2026 con tutte le decisioni prese con Niccolò. Le voci **[DA CONFERMARE]** hanno un default scelto ma non ancora confermato; le voci **[DA DECIDERE]** non hanno ancora una scelta. L'agente non cambia né le une né le altre di propria iniziativa. Tutto ciò che varia tra gli esperimenti si imposta da file di configurazione (§3.7).
+> **Stato:** aggiornata il 04/11/2026 con tutte le decisioni prese. Le voci **[DA CONFERMARE]** hanno un default scelto ma non ancora confermato; le voci **[DA DECIDERE]** non hanno ancora una scelta. L'agente non cambia né le une né le altre di propria iniziativa. Tutto ciò che varia tra gli esperimenti si imposta da file di configurazione (§3.7).
 
 ## 0. Riepilogo delle decisioni
 
@@ -8,7 +8,7 @@
 |---|---|---|---|
 | Backbone | DINOv2 da timm, attention globale, patch 16 al caricamento | deciso | §3.1 |
 | Registri | DINOv2 con 4 registri, in EoDT e nella baseline | deciso (Niccolò) | §3.1 |
-| Risoluzione | 576 px, uguale per tutte le taglie, configurabile | [DA CONFERMARE] | §3.1 |
+| Risoluzione | 576 px (come la Medium), uguale per tutte le taglie, configurabile | deciso | §3.1 |
 | Projector | rimosso | deciso | §1 |
 | Decoder | rimosso: query negli ultimi L2 blocchi del ViT | deciso | §3.2, §3.4 |
 | L2 | 3 per ViT-S e ViT-B, 4 per ViT-L (come EoMT); **obbligatorio in ogni YAML**, nessun default nel codice | deciso, da ablare | §3.2 |
@@ -17,7 +17,7 @@
 | Box | `learned`: box assoluto; `selection`: Δ sempre rispetto a b0 | deciso | §3.5 |
 | Testa | una sola, condivisa da tutti i blocchi L2; prima della testa la norm finale pre-addestrata del ViT (`vit.norm`), come EoMT | deciso | §3.5 |
 | Group-DETR | due alternative a confronto: (a) niente gruppi, che è anche la prima versione; (b) gruppi con patch isolati | deciso (Niccolò) | §4 |
-| Baseline | RF-DETR senza Group-DETR, configurazione Medium sul ViT-S | deciso; Medium [DA CONFERMARE] | §5 |
+| Baseline | RF-DETR senza Group-DETR, configurazione Medium sul ViT-S (576 px, 4 layer di decoder, 300 query); decoder scritto nel YAML | deciso | §5 |
 | Catena di ablazione | con finestre → senza finestre → senza projector → EoDT, tutte riaddestrate | deciso (Niccolò) | §5 |
 | Scaling a ViT-B e ViT-L | come scalare la baseline | [DA DECIDERE]; il codice deve già permetterlo da configurazione | §3.6 |
 | Ricetta di training | quella di RF-DETR con warm-up e learning rate che scende; rifinita sul ViT-S e identica per EoDT e baseline | deciso | §7 |
@@ -75,7 +75,7 @@ Lo schema mostra la modalità `selection`. Con la modalità `learned` le query n
 - Nome: `vit_small_patch14_reg4_dinov2` (ViT-S); `vit_base_patch14_reg4_dinov2` e `vit_large_patch14_reg4_dinov2` per le altre taglie.
 - **Patch 16 al caricamento**: `timm.create_model(name, pretrained=True, img_size=(R, R), patch_size=16, num_classes=0)`. timm ricampiona il patch embedding (FlexiViT) e interpola il positional embedding sulla griglia R/16. È lo stesso schema di `ref-eomt/models/vit.py`.
 - **Registri: sì** (deciso con Niccolò). DINOv2 con 4 registri, sia in EoDT sia nella baseline.
-- **[DA CONFERMARE] Risoluzione R = 576 come default**, la stessa della baseline (configurazione Medium di RF-DETR, §5). Uguale per tutte le taglie. Si imposta nel file di configurazione (§3.7), mai nel codice. Ingresso quadrato fisso, quindi niente padding: con R = 576 la griglia è 36×36 = 1296 patch.
+- **Risoluzione R = 576** (deciso), la stessa della baseline (configurazione Medium di RF-DETR, §5). Uguale per tutte le taglie. Si imposta nel file di configurazione (§3.7), mai nel codice. Ingresso quadrato fisso, quindi niente padding: con R = 576 la griglia è 36×36 = 1296 patch.
 - Normalizzazione dell'immagine: la fa già il dataloader di RF-DETR (media e deviazione standard di ImageNet). **Non va ripetuta nel modello**: la normalizzazione interna di EoMT non va copiata.
 
 ### 3.2 Divisione L1 / L2
@@ -189,7 +189,8 @@ La baseline è **RF-DETR riaddestrato con lo stesso training di EoDT**, senza Gr
 | **EoDT** | no | no | no: query negli ultimi L2 blocchi |
 
 - **Tutte le run vanno riaddestrate**, compresa quella con le finestre: i training devono essere equivalenti (Niccolò).
-- **Configurazione:** **[DA CONFERMARE] Medium di RF-DETR** sul ViT-S: 576 px, 4 layer del decoder, 300 query. Niccolò ha detto di partire dalla configurazione di default di RF-DETR e di sceglierne una.
+- **Configurazione:** **Medium di RF-DETR** sul ViT-S (deciso al passo 7): 576 px, 4 layer del decoder, 300 query. Niccolò ha indicato di partire da una configurazione di default di RF-DETR. Tutti i parametri del decoder (layer, dimensione nascosta, teste, punti) sono scritti esplicitamente nei YAML della baseline, così un cambio futuro (per esempio lo scaling a ViT-B e ViT-L, §3.6) richiede solo il YAML. `dim_feedforward` resta 2048, fisso come in tutte le taglie di RF-DETR.
+- **Senza projector:** il decoder legge **solo l'uscita dell'ultimo blocco** del ViT (`out_feature_indexes: [12]` per ViT-S), portata a `hidden_dim` con un `Linear`: si tolgono insieme la fusione dei 4 blocchi e il projector, cioè proprio ciò che EoDT elimina.
 - In comune con EoDT: DINOv2 con 4 registri, patch 16 (§8 punto 4), risoluzione, `group_detr = 1`, niente NAS, niente Objects365, stessa ricetta e stesse epoch (§7).
 - **Latenza dell'RF-DETR originale:** si misura anche sui checkpoint pubblicati, senza riaddestrare (§6). Serve perché senza finestre la baseline è più lenta dell'originale, e confrontarsi solo con lei favorirebbe EoDT.
 
