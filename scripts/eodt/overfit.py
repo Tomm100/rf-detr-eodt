@@ -11,7 +11,8 @@ Trains with ``build_trainer`` + ``RFDETRModelModule`` + ``RFDETRDataModule``, as
 to the ``output_dir`` of the YAML file:
 - ``curves.png``: loss and mAP per epoch, read from Lightning's ``metrics.csv``;
 - ``predictions.png``: ground truth and the predictions of the trained model and of its EMA on three images;
-and prints the final metrics against the success criteria of step 5.
+and prints the final metrics against the success criteria of step 5. On Leonardo (``scripts/leonardo/overfit.sh``)
+the YAML also turns W&B on, with the tag ``test``.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import os
 import time
 from pathlib import Path
 
@@ -31,6 +33,7 @@ from pytorch_lightning import seed_everything
 
 from rfdetr.datasets.coco import CocoDetection
 from rfdetr.models.eodt import load_configs
+from rfdetr.models.eodt.train import wandb_tags
 from rfdetr.training.module_data import RFDETRDataModule
 from rfdetr.training.module_model import RFDETRModelModule
 from rfdetr.training.trainer import build_trainer
@@ -199,6 +202,8 @@ def main() -> None:
     output_dir = Path(train_config.output_dir)
     if (output_dir / "metrics.csv").exists():
         raise SystemExit(f"{output_dir} already holds a run: delete it or change output_dir")
+
+    os.environ["WANDB_TAGS"] = ",".join(wandb_tags(model_config, "test"))  # on W&B an overfit is a test run
 
     # RFDETRModelModule seeds only in on_fit_start: seed before building it, so that queries and head are reproducible
     seed_everything(train_config.seed)

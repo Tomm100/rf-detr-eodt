@@ -48,6 +48,12 @@ model:
       # evaluation (§6): COCO maxDets, applied per image and class; PostProcess keeps num_select = 300
       # detections per image. The same for EoDT and baseline
       eval_max_dets: 100
+      # logging (§7.3): W&B offline on the compute nodes, synced from the login node. scripts/leonardo/train.sh
+      # sets WANDB_RUN_ID to the name of this file, so that the jobs of a resumed run continue the same W&B run
+      wandb: true
+      project: eodt
+      run: eodt_vits_576_l2-3_learned
+      tensorboard: false  # W&B and metrics.csv already hold the curves
       # hardware (Leonardo)
       devices: 4
       num_nodes: 1

@@ -50,7 +50,7 @@ model:
       cls_loss_coef: 1.0
       use_ema: true
       ema_decay: 0.993
-      amp_dtype: null  # overfit: fp32, the GTX 1650 has no bf16
+      amp_dtype: null  # overfit: fp32, the GTX 1650 has no native bf16
       seed: 0
       # evaluation (§6): COCO maxDets, applied per image and class; PostProcess keeps num_select = 300
       # detections per image. The same for EoDT and baseline
@@ -58,6 +58,11 @@ model:
       eval_base_model: true  # overfit: evaluate the trained model as well as the EMA
       eval_interval: 4  # overfit: 120 evaluations over the 480 epochs, the last one included
       checkpoint_interval: 480  # overfit: one archive checkpoint instead of 48
+      # logging (§7.3)
+      wandb: false  # overfit: local run, curves in metrics.csv
+      project: eodt
+      run: eodt_vits_576_l2-3_learned_overfit  # overfit: name of this file
+      tensorboard: false
       # hardware (local PC)
       devices: 1  # overfit: one GPU
       num_nodes: 1

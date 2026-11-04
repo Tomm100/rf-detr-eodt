@@ -28,8 +28,9 @@ EODT_YAML = Path(__file__).resolve().parents[2] / "configs" / "eodt" / "eodt_vit
 def eodt_yaml(tmp_path: Path) -> Callable[..., Path]:
     """Return a writer of copies of the EoDT YAML that run on this PC, with the given changes.
 
-    Paths and hardware of Leonardo are replaced by coco_mini, ``tmp_path``, one device and no worker process;
-    the changes of the test go into ``init_args``. Every change thus goes through a file and the loader.
+    Paths and hardware of Leonardo are replaced by coco_mini, ``tmp_path``, one device and no worker process, and
+    W&B is off unless a test turns it on; the changes of the test go into ``init_args``. Every change thus goes
+    through a file and the loader.
     """
     if not COCO_MINI.exists():
         pytest.skip(f"{COCO_MINI} not found")
@@ -45,6 +46,7 @@ def eodt_yaml(tmp_path: Path) -> Callable[..., Path]:
                 "devices": 1,
                 "strategy": "auto",
                 "num_workers": 0,
+                "wandb": False,
                 **(train_changes or {}),
             }
         )

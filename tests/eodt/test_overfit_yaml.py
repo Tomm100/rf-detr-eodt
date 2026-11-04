@@ -36,6 +36,8 @@ OVERFIT_CHANGES = {
     "eval_base_model": True,
     "eval_interval": 4,
     "checkpoint_interval": 480,
+    "wandb": False,
+    "run": "eodt_vits_576_l2-3_learned_overfit",
     "devices": 1,
     "strategy": "auto",
     "num_workers": 0,
