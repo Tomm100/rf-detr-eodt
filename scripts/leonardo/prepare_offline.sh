@@ -4,24 +4,32 @@
 #
 #   bash scripts/leonardo/prepare_offline.sh
 #
-# It downloads the DINOv2 weights of the three sizes into HF_HOME, checks that they load without internet as on the
-# compute nodes, checks that COCO and coco_mini are in place and creates the folder of the SLURM logs.
+# It downloads the DINOv2 weights of the three sizes into HF_HOME, for EoDT (timm) and for the baseline (Hugging Face
+# facebook/dinov2-with-registers-*, read by RF-DETR's loader, EODT_SPEC.md §8 point 4), checks that they load without
+# internet as on the compute nodes, checks that COCO and coco_mini are in place and creates the folder of the SLURM
+# logs.
 set -eo pipefail
 source /leonardo_work/IscrC_EoDT/tcentonz/rf-detr-eodt/scripts/leonardo/env.sh
 
 mkdir -p "$WORK_DIR/runs/slurm"
 
-BACKBONES="vit_small_patch14_reg4_dinov2 vit_base_patch14_reg4_dinov2 vit_large_patch14_reg4_dinov2"
+SIZES="small base large"
 for offline in 0 1; do  # download, then load from the cache only, as a compute node does
-    HF_HUB_OFFLINE=$offline python - $BACKBONES <<'EOF'
+    HF_HUB_OFFLINE=$offline python - $SIZES <<'EOF'
 import os
 import sys
 
 import timm
 
-for name in sys.argv[1:]:
-    timm.create_model(name, pretrained=True, num_classes=0)
-    print(f"{name}: {'loaded offline' if os.environ['HF_HUB_OFFLINE'] == '1' else 'downloaded'}")
+from rfdetr.models.eodt import load_native_dinov2
+
+state = "loaded offline" if os.environ["HF_HUB_OFFLINE"] == "1" else "downloaded"
+for size in sys.argv[1:]:
+    name = f"vit_{size}_patch14_reg4_dinov2"
+    timm.create_model(name, pretrained=True, num_classes=0)  # EoDT
+    print(f"{name}: {state}")
+    load_native_dinov2(size)  # baseline: RF-DETR's loader at patch 14, which also checks every key
+    print(f"facebook/dinov2-with-registers-{size}: {state}")
 EOF
 done
 

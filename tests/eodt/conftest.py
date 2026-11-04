@@ -1,7 +1,10 @@
 # ------------------------------------------------------------------------
 # EoDT: encoder-only detection on top of RF-DETR
 # ------------------------------------------------------------------------
-"""Fixtures shared by the EoDT tests: coco_mini read through RF-DETR's data module, and copies of the EoDT YAML."""
+"""Fixtures shared by the EoDT tests: coco_mini read through RF-DETR's data module, and copies of the YAML files.
+
+The copies of the YAML files of EoDT and of the baseline run on this PC.
+"""
 
 import itertools
 from collections.abc import Callable
@@ -13,31 +16,33 @@ import torch
 import yaml
 from torch import Tensor
 
-from rfdetr.config import TrainConfig
-from rfdetr.models.eodt import EoDTConfig
+from rfdetr.config import ModelConfig, TrainConfig
 from rfdetr.training.module_data import RFDETRDataModule
 from rfdetr.utilities.tensors import NestedTensor
 
 # 20 val2017 images with 2-10 objects each, the same in train and val (see CLAUDE.md)
 COCO_MINI = Path("C:/dev/tesi/data/coco_mini")
+CONFIGS = Path(__file__).resolve().parents[2] / "configs"
 # configuration of the first run on Leonardo (step 6)
-EODT_YAML = Path(__file__).resolve().parents[2] / "configs" / "eodt" / "eodt_vits_576_l2-3_learned.yaml"
+EODT_YAML = CONFIGS / "eodt" / "eodt_vits_576_l2-3_learned.yaml"
+# the three rings of the baseline's ablation chain (step 8)
+BASELINE_YAMLS = {
+    name: CONFIGS / "baseline" / f"baseline_medium_{name}.yaml" for name in ("win", "nowin", "nowin_noproj")
+}
 
 
-@pytest.fixture
-def eodt_yaml(tmp_path: Path) -> Callable[..., Path]:
-    """Return a writer of copies of the EoDT YAML that run on this PC, with the given changes.
+def _local_copies(source: Path, tmp_path: Path, counter: itertools.count) -> Callable[..., Path]:
+    """Return a writer of copies of ``source`` that run on this PC, with the given changes.
 
     Paths and hardware of Leonardo are replaced by coco_mini, ``tmp_path``, one device and no worker process, and
     W&B is off unless a test turns it on; the changes of the test go into ``init_args``. Every change thus goes
-    through a file and the loader.
+    through a file and the loader. ``counter`` numbers the copies of a test, so that none overwrites another.
     """
     if not COCO_MINI.exists():
         pytest.skip(f"{COCO_MINI} not found")
-    counter = itertools.count()
 
     def write(model_changes: dict[str, Any] | None = None, train_changes: dict[str, Any] | None = None) -> Path:
-        content = yaml.safe_load(EODT_YAML.read_text(encoding="utf-8"))
+        content = yaml.safe_load(source.read_text(encoding="utf-8"))
         content["model"]["model_config"]["init_args"].update(model_changes or {})
         content["model"]["train_config"]["init_args"].update(
             {
@@ -50,11 +55,24 @@ def eodt_yaml(tmp_path: Path) -> Callable[..., Path]:
                 **(train_changes or {}),
             }
         )
-        path = tmp_path / f"config_{next(counter)}.yaml"
+        path = tmp_path / f"{source.stem}_{next(counter)}.yaml"
         path.write_text(yaml.safe_dump(content, sort_keys=False), encoding="utf-8")
         return path
 
     return write
+
+
+@pytest.fixture
+def eodt_yaml(tmp_path: Path) -> Callable[..., Path]:
+    """Return a writer of local copies of the EoDT YAML of the first run, with the given changes."""
+    return _local_copies(EODT_YAML, tmp_path, itertools.count())
+
+
+@pytest.fixture
+def baseline_yaml(tmp_path: Path) -> Callable[[str], Callable[..., Path]]:
+    """Return, for a ring of the baseline (``"win"``, ``"nowin"`` or ``"nowin_noproj"``), a writer of local copies."""
+    counter = itertools.count()  # shared by the rings, so that two copies of a test never have the same name
+    return lambda name: _local_copies(BASELINE_YAMLS[name], tmp_path, counter)
 
 
 @pytest.fixture
@@ -91,7 +109,7 @@ def coco_mini_batch(
     """
 
     def load(
-        model_config: EoDTConfig, train_config: TrainConfig | None = None
+        model_config: ModelConfig, train_config: TrainConfig | None = None
     ) -> tuple[NestedTensor, list[dict[str, Tensor]]]:
         datamodule = RFDETRDataModule(model_config, train_config or coco_mini_train_config())
         datamodule.setup("validate")

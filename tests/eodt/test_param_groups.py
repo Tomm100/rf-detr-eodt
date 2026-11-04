@@ -10,14 +10,15 @@ Covers:
 - Layer-wise learning rate and weight decay of every ViT tensor, L2 blocks included; queries and head get ``lr``.
 - Changing L2 does not change any learning rate.
 - The learning-rate values of the training configuration reach the groups (§3.7).
-- Same learning rate and weight decay as the RF-DETR Medium baseline, tensor by tensor (decision of step 4).
+- Same learning rate and weight decay as the RF-DETR Medium baseline of ``configs/baseline``, tensor by tensor,
+  registers included (decision of step 4).
 - ViT-L: the decay follows its 24 blocks.
 
 The ViT-L case carries the ``gpu`` marker (slow on CPU): ``-m "not gpu"`` runs ViT-S only.
 """
 
 import re
-import warnings
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -25,8 +26,8 @@ import torch
 from torch import nn
 
 from rfdetr._namespace import _namespace_from_configs
-from rfdetr.config import ModelConfig, RFDETRMediumConfig, TrainConfig
-from rfdetr.models.eodt import EoDTConfig
+from rfdetr.config import ModelConfig, TrainConfig
+from rfdetr.models.eodt import EoDTConfig, load_configs
 from rfdetr.models.lwdetr import build_model_from_config
 from rfdetr.training.param_groups import get_param_dict
 from tests.eodt.vit_names import eodt_vit_name
@@ -44,6 +45,8 @@ NORMS = {"norm1", "norm2", "norm"}  # module names of the LayerNorms in the timm
 HEAD_AND_QUERIES = ("query_feat.", "class_embed.", "bbox_embed.")
 
 _BASELINE_VIT_PREFIX = "backbone.0.encoder.encoder."  # Hugging Face DINOv2 of the baseline, see vit_names.py
+# baseline without windows (step 8); windows and projector do not change the groups of the ViT
+BASELINE_YAML = Path(__file__).resolve().parents[2] / "configs" / "baseline" / "baseline_medium_nowin.yaml"
 
 
 def _train_config(**overrides: Any) -> TrainConfig:
@@ -156,15 +159,13 @@ def test_train_config_reaches_groups() -> None:
 def test_same_as_baseline() -> None:
     """Every ViT tensor of the RF-DETR Medium baseline has exactly the lr and weight decay of the same EoDT tensor.
 
-    The baseline is built in this fork with random weights (patch 16, nothing is downloaded). It has no registers,
-    so ``reg_token`` is checked by the formula tests only; ``mask_token`` has no counterpart in timm.
+    The baseline is the one of ``configs/baseline``, with its registers; ``mask_token`` has no counterpart in timm.
     """
     train_config = _train_config()
     eodt, eodt_config = _eodt()
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")  # pretrain_weights=None warns that the model starts from scratch
-        baseline_config = RFDETRMediumConfig(pretrain_weights=None, device="cpu")
-        baseline = build_model_from_config(baseline_config, train_config)
+    baseline_config, _ = load_configs(BASELINE_YAML)
+    torch.manual_seed(0)
+    baseline = build_model_from_config(baseline_config, train_config)
     eodt_groups = _groups_by_name(eodt, eodt_config, train_config)
     baseline_groups = _groups_by_name(baseline, baseline_config, train_config)
 
@@ -178,7 +179,7 @@ def test_same_as_baseline() -> None:
         compared.add(eodt_name)
 
     vit_names = {name for name in eodt_groups if name.startswith("backbone.vit.")}
-    assert compared == vit_names - {"backbone.vit.reg_token"}
+    assert compared == vit_names  # registers included
 
 
 @pytest.mark.gpu

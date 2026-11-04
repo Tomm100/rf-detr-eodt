@@ -59,6 +59,7 @@ def _config(size: str, depth: int, **overrides: Any) -> BaselineConfig:
             "patch_size": PATCH_SIZE,
             "positional_encoding_size": GRID,
             "num_windows": 1,
+            "projector": True,
             "projector_scale": ["P4"],
             "hidden_dim": 256,
             "dec_layers": 4,
