@@ -7,7 +7,9 @@ WORK_DIR=/leonardo_work/IscrC_EoDT/tcentonz
 CODE_DIR=$WORK_DIR/rf-detr-eodt
 
 module load python cuda
-source "$WORK_DIR/eodt-venv/bin/activate"
+# The venv is on $FAST: on $WORK importing transformers (hundreds of small files) took ~3 min per process on a
+# compute node, on $FAST ~25 s (measured on 05/11/2026, EODT_SPEC.md §11).
+source /leonardo_scratch/fast/IscrC_EoDT/tcentonz/eodt-venv/bin/activate
 cd "$CODE_DIR"
 
 export HF_HOME=$WORK_DIR/hf_cache  # on $WORK, not on $HOME, which is small

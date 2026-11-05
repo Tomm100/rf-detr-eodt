@@ -345,8 +345,8 @@ Le versioni sono fissate in `requirements-eodt.txt` (generato da `requirements-e
 | Cartella | `C:/dev/tesi/rf-detr-eodt` | `/leonardo_work/IscrC_EoDT/tcentonz/rf-detr-eodt` |
 | Dati | `C:/dev/tesi/data/coco_mini` (20 immagini, overfit) | COCO 2017 completo in `/leonardo_scratch/fast/IscrC_EoDT/coco` (`$FAST`: veloce, nessuna cancellazione per inattività) |
 | Output | — | `/leonardo_work/IscrC_EoDT/tcentonz/runs/<nome esperimento>` |
-| Ambiente | `.venv` (uv) | `/leonardo_work/IscrC_EoDT/tcentonz/eodt-venv` |
-| Attivazione | `.venv\Scripts\python.exe ...` | `module load python cuda && source /leonardo_work/IscrC_EoDT/tcentonz/eodt-venv/bin/activate` |
+| Ambiente | `.venv` (uv) | `/leonardo_scratch/fast/IscrC_EoDT/tcentonz/eodt-venv` (su `$FAST` dal 05/11/2026: su `$WORK` l'import di transformers 5, che legge centinaia di file piccoli, richiedeva ~5,5 min sul nodo di login e ~2,8 min su un nodo di calcolo; su `$FAST` 43 s e 24 s) |
+| Attivazione | `.venv\Scripts\python.exe ...` | `module load python cuda && source /leonardo_scratch/fast/IscrC_EoDT/tcentonz/eodt-venv/bin/activate` |
 | GPU | GTX 1650, 4 GB, **niente bf16** (fp32 o fp16) | 4× A100 64 GB per nodo |
 | Chi lancia | l'agente (test) | io, a mano (l'agente scrive gli script SLURM) |
 

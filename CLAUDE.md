@@ -50,7 +50,7 @@ Questo è un **fork di RF-DETR per una tesi magistrale** (Tommaso Centonze, Poli
 ## Leonardo (training)
 
 - Non hai accesso a Leonardo: **gli script SLURM li scrivi, li lancio io**. Non usare `sbatch` o `ssh`.
-- Ambiente: `module load python cuda && source /leonardo_work/IscrC_EoDT/tcentonz/eodt-venv/bin/activate`; codice in `/leonardo_work/IscrC_EoDT/tcentonz/rf-detr-eodt`.
+- Ambiente: `module load python cuda && source /leonardo_scratch/fast/IscrC_EoDT/tcentonz/eodt-venv/bin/activate` (venv su `$FAST`, vedi §11 della specifica); codice in `/leonardo_work/IscrC_EoDT/tcentonz/rf-detr-eodt`.
 - I nodi di calcolo **non hanno internet**: pesi e dati vanno preparati prima dal nodo di login; W&B gira offline (§7.3 della specifica).
 - Limite di 24 ore per job: ogni training deve poter ripartire dall'ultimo checkpoint.
 - Gli script `.sh` devono avere gli a capo Unix (garantito da `.gitattributes`).
