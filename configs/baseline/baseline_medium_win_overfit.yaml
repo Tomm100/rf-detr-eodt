@@ -1,0 +1,79 @@
+# Baseline RF-DETR Medium with windows (the baseline of step 10): overfit on the 20 images of coco_mini
+# (EODT_SPEC.md §9, step 8d), with the setup and the success criteria of the overfit of EoDT (step 5).
+# Copy of baseline_medium_win.yaml that runs on the local GTX 1650 (4 GB, no bf16): the model is unchanged, and the
+# train_config is the one of configs/eodt/eodt_vits_576_l2-3_learned_overfit.yaml but output_dir and run, so the keys
+# marked "overfit:" are the only ones that differ from the recipe (checked by tests/eodt/test_baseline_overfit_yaml.py).
+# Launched by scripts/eodt/overfit.py, not part of the test suite.
+#
+# Written as the configurations hold them: "off" between quotes (bare off is the boolean false) and floats
+# with a dot (pyyaml reads 1e-4 as a string). TrainConfig would convert both, but the tests compare file and
+# configuration value by value.
+
+model:
+  model_config:
+    class_path: rfdetr.models.eodt.BaselineConfig
+    init_args:
+      # backbone (§5, §8 point 4): pretrained DINOv2 resampled to patch 16 with timm's functions, as in EoDT
+      encoder: dinov2_registers_windowed_small  # ViT-S with 4 registers
+      out_feature_indexes: [3, 6, 9, 12]  # blocks fused by the projector; the last is the last block of the ViT
+      resolution: 576
+      patch_size: 16
+      positional_encoding_size: 36  # resolution / patch_size: the positional embedding of EoDT
+      num_windows: 2  # windowed attention, as in RF-DETR Medium
+      # projector
+      projector: true  # MultiScaleProjector of RF-DETR
+      projector_scale: [P4]  # one level, at the stride of the ViT
+      # decoder of RF-DETR Medium (dim_feedforward 2048 is fixed, as in every size of RF-DETR)
+      hidden_dim: 256
+      dec_layers: 4
+      sa_nheads: 8
+      ca_nheads: 16
+      dec_n_points: 2
+      num_queries: 300
+      group_detr: 1  # §5: no Group-DETR
+      num_classes: 90  # COCO: 91 logits
+  train_config:
+    class_path: rfdetr.config.TrainConfig
+    init_args:
+      dataset_file: coco
+      dataset_dir: C:/dev/tesi/data/coco_mini  # overfit: 20 val2017 images, the same in train and val
+      output_dir: C:/dev/tesi/rf-detr-eodt/output/baseline_medium_win_overfit  # overfit: git-ignored
+      # input and augmentation (§7.0)
+      multi_scale: "off"
+      square_resize_div_64: true
+      augmentation_backend: torchvision
+      aug_config: {}  # overfit: no horizontal flip
+      scale_jitter: false  # overfit: fixed resize, no random crop; train and val get the same pipeline
+      # optimization (§7.1)
+      lr: 1.0e-4
+      lr_encoder: 1.5e-4
+      lr_vit_layer_decay: 0.8
+      lr_component_decay: 0.7
+      weight_decay: 1.0e-4
+      clip_max_norm: 0.1
+      lr_scheduler: cosine
+      warmup_epochs: 40  # overfit: 200 steps, 1/12 of the run as on COCO
+      epochs: 480  # overfit: 2400 steps of 5 per epoch
+      batch_size: 4  # 20 images = 5 batches: every image once per epoch, sampled without replacement
+      grad_accum_steps: 1
+      cls_loss_coef: 1.0
+      use_ema: true
+      ema_decay: 0.993
+      amp_dtype: null  # overfit: fp32, the GTX 1650 has no native bf16
+      seed: 0
+      # evaluation (§6): COCO maxDets, applied per image and class; PostProcess keeps num_select = 300
+      # detections per image. The same for EoDT and baseline
+      eval_max_dets: 100
+      eval_base_model: true  # overfit: evaluate the trained model as well as the EMA
+      eval_interval: 4  # overfit: 120 evaluations over the 480 epochs, the last one included
+      checkpoint_interval: 480  # overfit: one archive checkpoint instead of 48
+      # logging (§7.3)
+      wandb: false  # overfit: local run, curves in metrics.csv
+      project: eodt
+      run: baseline_medium_win_overfit  # overfit: name of this file
+      tensorboard: false
+      # hardware (local PC)
+      devices: 1  # overfit: one GPU
+      num_nodes: 1
+      strategy: auto  # overfit: no DDP
+      num_workers: 0  # overfit: 20 small JPEG, read in the main process
