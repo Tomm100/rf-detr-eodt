@@ -203,8 +203,14 @@ La baseline è **RF-DETR riaddestrato con lo stesso training di EoDT**, senza Gr
 
 - **Accuratezza:** AP COCO sul validation set 2017 (5.000 immagini), con la valutazione di RF-DETR con `eval_max_dets: 100` (COCO standard; default di RF-DETR 500) e `num_select: 300` (come RF-DETR e la famiglia DINO). Nota: in COCOeval `maxDets` vale **per coppia (immagine, classe)**, quindi con `num_select: 300` si valutano fino a 300 detection per immagine. È la stessa convenzione con cui RF-DETR e DINO riportano i loro numeri, quindi si mantiene per la confrontabilità con i paper. Uguale per EoDT e baseline. Prima del confronto con la Tabella 5 di RF-DETR (§7.2) va verificato con quale valore sono calcolati i numeri del paper. Il test set non si usa (non ha etichette pubbliche). Per COCO, anche la fase `test` di RF-DETR ricade su val2017. Quale checkpoint si valuta è indicato in §7.1.
 - **AP per dimensione (small/medium/large):** registrate da RF-DETR dal passo 6a. **Attenzione:** RF-DETR non passa alla metrica le `area` delle annotazioni COCO (`_convert_targets` in `training/callbacks/coco_eval.py`), quindi la dimensione di un oggetto si calcola dall'area del box, non da quella della segmentazione come nel COCO ufficiale. Le AP per dimensione sono confrontabili tra EoDT e baseline, ma **non con quelle dei paper**. [DA DECIDERE] se correggerlo prima di confrontarsi con i paper. La mAP 50:95 complessiva non ne è toccata.
-- **Velocità:** latenza, con lo stesso protocollo per tutti i modelli: stessa GPU, stessa precisione, batch 1, modelli compilati. In più: memoria, numero di parametri e FLOPs.
-- **Script di benchmark:** uno solo, usato per EoDT, per la baseline e per i checkpoint pubblicati di RF-DETR. Si implementa alla fine (§9 passo 13).
+- **Velocità:** latenza (e FPS), **rimisurata da zero per tutti i modelli nelle stesse condizioni**, come fa EoMT (Appendice A.3): non si copiano i numeri dei paper, compresi quelli di RF-DETR (T4 + TensorRT), che quindi non sono confrontabili con i nostri. Protocollo:
+  - **A100 di Leonardo**, nodo riservato al solo benchmark (nessun altro job sulla stessa GPU);
+  - PyTorch con `torch.compile` e mixed precision bf16, attention con SDPA/FlashAttention dove il modello lo permette;
+  - batch 1, media su tutte le immagini del validation set, dopo alcune iterazioni di warm-up; si misura il forward del modello (si dichiara se il post-processing è incluso o no, uguale per tutti);
+  - modelli misurati: EoDT, tutti gli anelli della catena e i checkpoint pubblicati di RF-DETR (le taglie con la stessa configurazione della baseline);
+  - se un modello non si compila o non supporta bf16, lo si misura senza e lo si dichiara, come fa EoMT.
+  - In più: memoria di picco, numero di parametri e FLOPs (calcolati con lo stesso strumento per tutti, per esempio fvcore, da aggiungere alle dipendenze).
+- **Script di benchmark:** uno solo, usato per EoDT, per la baseline e per i checkpoint pubblicati di RF-DETR. La latenza non dipende dai pesi addestrati, quindi lo script si può scrivere e provare **in parallelo al passo 10**, mentre girano le run (§9 passo 13); i numeri definitivi si misurano sui modelli finali.
 
 ## 7. Training
 
@@ -317,7 +323,7 @@ Ogni passo si chiude **solo** quando il suo test passa. Poi l'agente si ferma: r
 | | **EoDT `selection` (modello principale)** | |
 | 9 | Query `selection` | Top-Q corretto. b0 senza gradiente. Con Δ = 0 il box è uguale al riferimento (uguale a b0 con `refpoint_embed` a zero, cioè all'inizio). `enc_outputs` presente. Il cambio di `query_mode` avviene solo da YAML. Ripetere i test 4 e 5 (compreso l'overfit su coco_mini con gli stessi criteri), e verificare che `learned` funzioni ancora. |
 | | **Confronto e ricetta** | |
-| 10 | **Due run insieme**: EoDT `selection` e baseline, ViT-S, stessa ricetta di partenza e stesse epoch | Entrambe completate, curve su W&B confrontabili (stesse metriche, stessi intervalli di valutazione). |
+| 10 | **Due run insieme**: EoDT `selection` e baseline **RF-DETR con finestre** (primo anello della catena, riaddestrato), ViT-S, stessa ricetta di partenza e stesse epoch. La ricetta si rifinisce (passo 11) sul riferimento vero, non su una baseline già privata di un componente. Gli anelli intermedi (senza finestre, senza projector) e l'ablazione `learned` si lanciano solo con la ricetta finale, dopo il passo 11 | Entrambe completate, curve su W&B confrontabili (stesse metriche, stessi intervalli di valutazione). |
 | 11 | **Rifinitura della ricetta** (§7.2), guardando entrambe le run | Ogni modifica provata su EoDT e baseline. Ricetta finale scritta in §7.1, con l'elenco delle configurazioni provate. La run `learned` (ablazione) si rifà con la ricetta finale. |
 | | **Resto di EoDT** | |
 | 12 | Group-DETR, variante (b) | Attention mask: i patch non vedono le query, i gruppi non si vedono tra loro. Ripetere i test 4 e 5. |
