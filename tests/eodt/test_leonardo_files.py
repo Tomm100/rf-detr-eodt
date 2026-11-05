@@ -4,10 +4,13 @@
 """Tests for the files that run EoDT and the baseline on Leonardo (steps 6c and 8b of EODT_SPEC.md §9).
 
 The jobs run only on Leonardo; on the PC these tests check that:
-- the YAML of the test job and the one of the overfit on Leonardo differ from the YAML they copy only in the keys
-  of their role, so that the recipe they test is the real one;
+- the YAML files of the test jobs and of the overfits on Leonardo, which verify the infrastructure of step 6 on the
+  two models of step 10 (EoDT selection and baseline_medium_win), differ from the YAML they copy only in the keys of
+  their role, so that the recipe they test is the real one;
 - every W&B run, of EoDT and of the baseline, is named after its YAML file, the WANDB_RUN_ID that
   ``scripts/leonardo/train.sh`` sets;
+- ``train.sh`` and ``overfit.sh`` take the YAML file as argument, the files named in their usage comments exist, and
+  srun gives each process the cores of sbatch;
 - ``prepare_offline.sh`` puts in the cache the DINOv2 weights of the three sizes for EoDT (timm) and for the baseline
   (Hugging Face), and its Python code downloads them and then loads them without internet;
 - ``benchmark.sh`` (step 13) measures EoDT, the rings of the baseline and RF-DETR's published checkpoints with the
@@ -19,6 +22,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -29,42 +33,65 @@ from rfdetr.models.eodt import load_configs
 from rfdetr.models.eodt.benchmark import PUBLISHED
 
 ROOT = Path(__file__).resolve().parents[2]
-CONFIGS = ROOT / "configs" / "eodt"
+CONFIGS = ROOT / "configs"
 RUNS = "/leonardo_work/IscrC_EoDT/tcentonz/runs"
 
 
 def _read(name: str) -> dict[str, Any]:
-    """Read a YAML file of ``configs/eodt`` as plain data."""
+    """Read a YAML file of ``configs`` (``eodt/...`` or ``baseline/...``) as plain data."""
     return yaml.safe_load((CONFIGS / name).read_text(encoding="utf-8"))
 
 
+def _test_job(run: str) -> dict[str, Any]:
+    """Keys of a test job: 2 epochs, its own output_dir and W&B run, named after the file."""
+    return {"output_dir": f"{RUNS}/{run}", "epochs": 2, "run": run}
+
+
+def _overfit_on_leonardo(run: str) -> dict[str, Any]:
+    """Keys of an overfit on Leonardo: coco_mini on $WORK, bf16, W&B, its own output_dir and W&B run."""
+    return {
+        "dataset_dir": "/leonardo_work/IscrC_EoDT/tcentonz/data/coco_mini",
+        "output_dir": f"{RUNS}/{run}",
+        "amp_dtype": "bf16",
+        "wandb": True,
+        "run": run,
+    }
+
+
 @pytest.mark.parametrize(
-    ("base", "derived", "changes"),
+    ("base", "derived", "role"),
     [
+        ("eodt/eodt_vits_576_l2-3_learned.yaml", "eodt/eodt_vits_576_l2-3_learned_testjob.yaml", _test_job),
         (
-            "eodt_vits_576_l2-3_learned.yaml",
-            "eodt_vits_576_l2-3_learned_testjob.yaml",
-            {
-                "output_dir": f"{RUNS}/eodt_vits_576_l2-3_learned_testjob",
-                "epochs": 2,
-                "run": "eodt_vits_576_l2-3_learned_testjob",
-            },
+            "eodt/eodt_vits_576_l2-3_learned_overfit.yaml",
+            "eodt/eodt_vits_576_l2-3_learned_overfit_leonardo.yaml",
+            _overfit_on_leonardo,
         ),
+        ("eodt/eodt_vits_576_l2-3_selection.yaml", "eodt/eodt_vits_576_l2-3_selection_testjob.yaml", _test_job),
         (
-            "eodt_vits_576_l2-3_learned_overfit.yaml",
-            "eodt_vits_576_l2-3_learned_overfit_leonardo.yaml",
-            {
-                "dataset_dir": "/leonardo_work/IscrC_EoDT/tcentonz/data/coco_mini",
-                "output_dir": f"{RUNS}/eodt_vits_576_l2-3_learned_overfit_leonardo",
-                "amp_dtype": "bf16",
-                "wandb": True,
-                "run": "eodt_vits_576_l2-3_learned_overfit_leonardo",
-            },
+            "eodt/eodt_vits_576_l2-3_selection_overfit.yaml",
+            "eodt/eodt_vits_576_l2-3_selection_overfit_leonardo.yaml",
+            _overfit_on_leonardo,
+        ),
+        ("baseline/baseline_medium_win.yaml", "baseline/baseline_medium_win_testjob.yaml", _test_job),
+        (
+            "baseline/baseline_medium_win_overfit.yaml",
+            "baseline/baseline_medium_win_overfit_leonardo.yaml",
+            _overfit_on_leonardo,
         ),
     ],
-    ids=["testjob", "overfit_leonardo"],
+    ids=[
+        "learned_testjob",
+        "learned_overfit_leonardo",
+        "selection_testjob",
+        "selection_overfit_leonardo",
+        "baseline_medium_win_testjob",
+        "baseline_medium_win_overfit_leonardo",
+    ],
 )
-def test_derived_yaml_changes_only_listed_keys(base: str, derived: str, changes: dict[str, Any]) -> None:
+def test_derived_yaml_changes_only_listed_keys(
+    base: str, derived: str, role: Callable[[str], dict[str, Any]]
+) -> None:
     """Model and recipe are those of the copied YAML: only the keys of the test job or of Leonardo change."""
     base_content, derived_content = _read(base), _read(derived)
     base_train = base_content["model"]["train_config"].pop("init_args")
@@ -72,17 +99,36 @@ def test_derived_yaml_changes_only_listed_keys(base: str, derived: str, changes:
 
     assert derived_content == base_content  # class paths and the whole model_config
     assert set(derived_train) == set(base_train)
-    assert {key: value for key, value in derived_train.items() if base_train[key] != value} == changes
+    changes = {key: value for key, value in derived_train.items() if base_train[key] != value}
+    assert changes == role(Path(derived).stem)
     load_configs(CONFIGS / derived)
 
 
 def test_wandb_run_is_named_after_the_file() -> None:
     """The W&B run of every YAML, of EoDT and of the baseline, is the name of the file: the WANDB_RUN_ID of train.sh."""
-    paths = sorted(CONFIGS.glob("*.yaml")) + sorted((ROOT / "configs" / "baseline").glob("*.yaml"))
+    paths = sorted((CONFIGS / "eodt").glob("*.yaml")) + sorted((CONFIGS / "baseline").glob("*.yaml"))
 
     assert any(path.parent.name == "baseline" for path in paths)
     for path in paths:
         assert load_configs(path)[1].run == path.stem, path.name
+
+
+@pytest.mark.parametrize("name", ["train.sh", "overfit.sh"])
+def test_train_and_overfit_scripts(name: str) -> None:
+    """train.sh and overfit.sh take the YAML file as argument and srun gives each process the cores of sbatch.
+
+    Their usage comments are copied as they are on the login node: every YAML file they name exists and loads.
+    """
+    lines = (ROOT / "scripts" / "leonardo" / name).read_text(encoding="utf-8").splitlines()
+    comments = "\n".join(line for line in lines if line.startswith("#"))
+    code = "\n".join(line for line in lines if not line.startswith("#"))
+    paths = re.findall(r"configs/\S+\.yaml", comments)
+
+    assert {Path(path).parent.name for path in paths} == {"eodt", "baseline"}
+    for path in paths:
+        load_configs(ROOT / path)
+    assert "configs/" not in code  # no YAML file written in the script
+    assert re.search(r'^srun --cpus-per-task="\$SLURM_CPUS_PER_TASK" python \S+\.py "\$@"$', code, flags=re.M)
 
 
 def test_prepare_offline_caches_dinov2() -> None:

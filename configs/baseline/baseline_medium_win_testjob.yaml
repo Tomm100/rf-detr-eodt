@@ -1,0 +1,74 @@
+# Baseline RF-DETR Medium with windows (the baseline of step 10): test job on Leonardo of its run (EODT_SPEC.md §9,
+# verification of step 6). Copy of baseline_medium_win.yaml with only the keys marked "test job:" changed (checked by
+# tests/eodt/test_leonardo_files.py): 2 epochs, its own output_dir and W&B run. Launched twice by
+# scripts/leonardo/train.sh with --limit-train-batches 300 --limit-val-batches 40, the first time with
+# --stop-after-epoch 1, the second with --resume, to test resume, W&B and bf16 within the 30 minutes of the debug QOS.
+#
+# Written as the configurations hold them: "off" between quotes (bare off is the boolean false) and floats
+# with a dot (pyyaml reads 1e-4 as a string). TrainConfig would convert both, but the tests compare file and
+# configuration value by value.
+
+model:
+  model_config:
+    class_path: rfdetr.models.eodt.BaselineConfig
+    init_args:
+      # backbone (§5, §8 point 4): pretrained DINOv2 resampled to patch 16 with timm's functions, as in EoDT
+      encoder: dinov2_registers_windowed_small  # ViT-S with 4 registers
+      out_feature_indexes: [3, 6, 9, 12]  # blocks fused by the projector; the last is the last block of the ViT
+      resolution: 576
+      patch_size: 16
+      positional_encoding_size: 36  # resolution / patch_size: the positional embedding of EoDT
+      num_windows: 2  # windowed attention, as in RF-DETR Medium
+      # projector
+      projector: true  # MultiScaleProjector of RF-DETR
+      projector_scale: [P4]  # one level, at the stride of the ViT
+      # decoder of RF-DETR Medium (dim_feedforward 2048 is fixed, as in every size of RF-DETR)
+      hidden_dim: 256
+      dec_layers: 4
+      sa_nheads: 8
+      ca_nheads: 16
+      dec_n_points: 2
+      num_queries: 300
+      group_detr: 1  # §5: no Group-DETR
+      num_classes: 90  # COCO: 91 logits
+  train_config:
+    class_path: rfdetr.config.TrainConfig
+    init_args:
+      dataset_file: coco
+      dataset_dir: /leonardo_scratch/fast/IscrC_EoDT/coco
+      output_dir: /leonardo_work/IscrC_EoDT/tcentonz/runs/baseline_medium_win_testjob  # test job
+      # input and augmentation (§7.0)
+      multi_scale: "off"
+      square_resize_div_64: true
+      augmentation_backend: torchvision
+      # optimization (§7.1)
+      lr: 1.0e-4
+      lr_encoder: 1.5e-4
+      lr_vit_layer_decay: 0.8
+      lr_component_decay: 0.7
+      weight_decay: 1.0e-4
+      clip_max_norm: 0.1
+      lr_scheduler: cosine
+      warmup_epochs: 1
+      epochs: 2  # test job: one epoch per job, each limited to 300 training batches
+      batch_size: 4  # per GPU
+      grad_accum_steps: 1
+      cls_loss_coef: 1.0
+      use_ema: true
+      ema_decay: 0.993
+      amp_dtype: bf16
+      seed: 0
+      # evaluation (§6): COCO maxDets, applied per image and class; PostProcess keeps num_select = 300
+      # detections per image. The same for EoDT and baseline
+      eval_max_dets: 100
+      # logging (§7.3): W&B offline on the compute nodes, synced from the login node. scripts/leonardo/train.sh
+      # sets WANDB_RUN_ID to the name of this file, so that the jobs of a resumed run continue the same W&B run
+      wandb: true
+      project: eodt
+      run: baseline_medium_win_testjob  # test job: name of this file
+      tensorboard: false  # W&B and metrics.csv already hold the curves
+      # hardware (Leonardo)
+      devices: 4
+      num_nodes: 1
+      strategy: ddp
+      num_workers: 7  # per GPU: one core per GPU left to the main process

@@ -9,18 +9,23 @@
 #SBATCH --time=01:00:00
 #SBATCH --output=/leonardo_work/IscrC_EoDT/tcentonz/runs/slurm/%x-%j.out
 #
-# Overfit of EoDT on the 20 images of coco_mini, in bf16 on one A100: the criteria of step 5 again, as the first
-# job of step 6 (EODT_SPEC.md §9). From the code folder on the login node:
+# Overfit of EoDT or of the baseline on the 20 images of coco_mini, in bf16 on one A100: the criteria of step 5 again,
+# to verify the infrastructure of step 6 on the two models of step 10 (EODT_SPEC.md §9). The YAML file is the
+# argument, the job is named after it; from the code folder on the login node:
 #
-#   sbatch scripts/leonardo/overfit.sh
+#   CONFIG=configs/eodt/eodt_vits_576_l2-3_selection_overfit_leonardo.yaml
+#   sbatch -J $(basename $CONFIG .yaml) scripts/leonardo/overfit.sh $CONFIG
 #
-# Normal queue, not the debug QOS: 2400 steps take an estimated 11-28 minutes on an A100 (66 on the GTX 1650),
-# too close to its 30-minute limit; the uncertain part is last.ckpt (344 MB) written to $WORK at every epoch.
+# and the same with CONFIG=configs/baseline/baseline_medium_win_overfit_leonardo.yaml for the baseline.
+# The arguments are those of scripts/eodt/overfit.py. Normal queue, not the debug QOS: 2400 steps take an estimated
+# 11-28 minutes on an A100 (65 for EoDT selection and 60 for the baseline on the GTX 1650), too close to its 30-minute
+# limit; the uncertain part is last.ckpt written to $WORK at every epoch.
 # The verdict is at the end of the SLURM output; curves.png and predictions.png are in the output_dir of the YAML.
 # W&B (tag "test"): an overfit does not resume, so wandb picks a new run id at every job. Sync from the login node:
 #
-#   wandb sync /leonardo_work/IscrC_EoDT/tcentonz/runs/eodt_vits_576_l2-3_learned_overfit_leonardo/wandb/offline-run-*
+#   wandb sync <output_dir of the YAML>/wandb/offline-run-*
 set -eo pipefail
 source /leonardo_work/IscrC_EoDT/tcentonz/rf-detr-eodt/scripts/leonardo/env.sh
 
-srun python scripts/eodt/overfit.py configs/eodt/eodt_vits_576_l2-3_learned_overfit_leonardo.yaml
+# srun does not inherit --cpus-per-task from sbatch: pass it, so that the process has its 8 cores
+srun --cpus-per-task="$SLURM_CPUS_PER_TASK" python scripts/eodt/overfit.py "$@"
