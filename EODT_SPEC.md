@@ -281,6 +281,7 @@ I nodi di calcolo di Leonardo non hanno accesso a internet: W&B lavora **offline
   - `WANDB_MODE=offline`;
   - `WANDB_DIR` su `$WORK` o `$SCRATCH`, non su `$HOME`, che ha poco spazio;
   - `WANDB_RUN_ID` fisso per esperimento e `WANDB_RESUME=allow`: un training che supera le 24 ore viene spezzato in più job, che devono continuare **la stessa run** su W&B invece di crearne una nuova per ogni job.
+- **Entità:** `WANDB_ENTITY=tom100-politecnico-di-torino` in `scripts/leonardo/env.sh`, il team dell'organizzazione accademica `tom100-politecnico-di-torino-org` (piano Academic, gratuito, approvato il 05/11/2026). Va fissata esplicitamente: l'entità predefinita dell'account è un altro team, di un progetto d'esame. Niccolò si può invitare nel team.
 - **Dal nodo di login:** `wandb sync <cartella della run offline>` alla fine di ogni job, oppure periodicamente durante il job per seguire le curve. Il login a W&B lo faccio io a mano, una volta sola.
 - **Cosa registrare:** loss (totale e per componente), AP e AP50/AP75/APs/APm/APl a ogni valutazione, learning rate, tempo per iterazione e immagini al secondo, memoria GPU. Configurazione completa e commit git come in §3.7.
 - **Non caricare su W&B i checkpoint**: sono pesanti e restano su `$WORK`.

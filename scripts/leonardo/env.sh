@@ -16,4 +16,7 @@ export HF_HOME=$WORK_DIR/hf_cache  # on $WORK, not on $HOME, which is small
 export HF_HUB_OFFLINE=1
 export RF_HOME=$WORK_DIR/rfdetr_cache  # RF-DETR's published checkpoints, for the latency benchmark (§6)
 export WANDB_MODE=offline
+# W&B team of the academic org tom100-politecnico-di-torino-org: explicit, because the default entity of the account
+# is another team (EODT_SPEC.md §7.3)
+export WANDB_ENTITY=tom100-politecnico-di-torino
 export PYTHONUNBUFFERED=1  # logs reach the SLURM output while the job runs
