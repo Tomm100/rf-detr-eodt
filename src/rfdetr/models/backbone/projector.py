@@ -184,7 +184,11 @@ class C2f(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         """Forward pass using split() instead of chunk()."""
         y = list(self.cv1(x).split((self.c, self.c), 1))
-        y.extend(m(y[-1]) for m in self.m)
+        # EoDT: an explicit loop instead of y.extend(m(y[-1]) for m in self.m), the same computation in eager mode.
+        # torch.compile (Dynamo, torch 2.6) evaluated the generator before extending the list, so every bottleneck
+        # read the same input instead of the previous output (tests/eodt/test_benchmark.py).
+        for m in self.m:
+            y.append(m(y[-1]))
         return cast(Tensor, self.cv2(torch.cat(y, 1)))
 
 

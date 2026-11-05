@@ -1,0 +1,17 @@
+# Latency protocol of EODT_SPEC.md §6, for the numbers of the thesis: one A100 of Leonardo on a node reserved to the
+# benchmark (scripts/leonardo/benchmark.sh), the same settings for every model, as in EoMT (Appendix A.3).
+# Read by rfdetr.models.eodt.benchmark.load_benchmark_config: every key is required, an unknown one is an error.
+#
+# Timed: the inference forward only (export()), from a preprocessed image already on the GPU to the boxes and logits
+# of the last L2 block or decoder layer; preprocessing, copy to the GPU and PostProcess are not timed.
+
+dataset_dir: /leonardo_scratch/fast/IscrC_EoDT/coco  # val2017 through the evaluation pipeline
+num_images: null  # all the 5000 images of val2017, batch 1
+num_workers: 7  # image loading, outside the timer
+warmup_iters: 500  # after the first call, which compiles and is timed apart
+device: cuda
+amp_dtype: bf16  # bf16 autocast; fp32 (recorded) if a model does not support it
+compile: true  # torch.compile; eager (recorded) if a model does not compile
+compile_mode: default  # as EoMT; no CUDA graphs (§10)
+compile_backend: inductor
+fullgraph: true  # a graph break is an error, not a hidden slowdown

@@ -18,7 +18,7 @@ Questo è un **fork di RF-DETR per una tesi magistrale** (Tommaso Centonze, Poli
 | `C:/dev/tesi/ref-rfdetr` | RF-DETR originale, stesso commit del fork: **sola lettura**, per confronti e test di equivalenza |
 | `C:/dev/tesi/ref-eomt` | EoMT originale: **sola lettura**, riferimento per le query nei blocchi (`models/eomt.py`, `models/vit.py`) |
 
-- Codice nuovo in `src/rfdetr/models/eodt/`, test in `tests/eodt/`, configurazioni in `configs/eodt/` e `configs/baseline/`, script per Leonardo in `scripts/leonardo/`.
+- Codice nuovo in `src/rfdetr/models/eodt/`, test in `tests/eodt/`, configurazioni in `configs/eodt/`, `configs/baseline/` e `configs/benchmark/` (protocolli di misura della latenza), script per Leonardo in `scripts/leonardo/`.
 - I file esistenti di RF-DETR **non si modificano**, salvo i punti di integrazione della §8 della specifica, e solo dopo averli proposti nel piano.
 
 ## Come si lavora

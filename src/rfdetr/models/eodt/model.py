@@ -109,26 +109,11 @@ class EoDT(nn.Module):
             are not bounded, as in RF-DETR.
         """
         x = samples.tensors if isinstance(samples, NestedTensor) else samples
-        tokens = self.backbone.forward_l1(x)
-        if self.query_mode == "learned":
-            queries = self.query_feat.weight[None].expand(x.shape[0], -1, -1)
-        else:
-            # vit.norm only on this branch, as RF-DETR normalizes the features it exports; L2 gets the raw tokens
-            patches = self.backbone.vit.norm(tokens[:, self.backbone.num_prefix_tokens :])
-            boxes_b0, enc_logits, enc_boxes = self.selection(patches, self.backbone.grid_size)
-            reference = reparam_boxes(self.refpoint_embed.weight[None], boxes_b0)  # [B, Q, 4]
-            # as ref_point_head in RF-DETR's decoder: D / 2 frequencies per coordinate, 2D features
-            query_pos = self.ref_point_head(gen_sineembed_for_position(reference, self.backbone.embed_dim // 2))
-            queries = self.query_feat.weight[None] + query_pos
+        tokens, queries, reference, enc_outputs = self._queries(x)
         query_states, _ = self.backbone.forward_l2(tokens, queries)
 
         hs = torch.stack([self.backbone.vit.norm(state) for state in query_states])  # [L2, B, Q, D]
-        outputs_class = self.class_embed(hs)
-        if self.query_mode == "learned":
-            outputs_coord = self.bbox_embed(hs).sigmoid()
-        else:
-            # always with respect to the reference, as lite_refpoint_refine in RF-DETR
-            outputs_coord = reparam_boxes(self.bbox_embed(hs), reference)
+        outputs_class, outputs_coord = self._predict(hs, reference)
 
         out = {
             "pred_logits": outputs_class[-1],
@@ -138,6 +123,55 @@ class EoDT(nn.Module):
                 for logits, boxes in zip(outputs_class[:-1], outputs_coord[:-1])
             ],
         }
-        if self.query_mode == "selection":
-            out["enc_outputs"] = {"pred_logits": enc_logits, "pred_boxes": enc_boxes}
+        if enc_outputs is not None:
+            out["enc_outputs"] = enc_outputs
         return out
+
+    def export(self) -> None:
+        """Switch to the inference forward of :meth:`forward_export`, as ``LWDETR.export`` does (one-way)."""
+        self.forward = self.forward_export  # type: ignore[method-assign,assignment]
+
+    def forward_export(self, x: Tensor) -> tuple[Tensor, Tensor]:
+        """Predict only after the last L2 block: what inference needs, as ``LWDETR.forward_export``.
+
+        Args:
+            x: Normalized images of shape ``[B, 3, resolution, resolution]``.
+
+        Returns:
+            ``pred_boxes`` ``[B, Q, 4]`` (cxcywh) and ``pred_logits`` ``[B, Q, num_classes]``, in this order as in
+            ``LWDETR.forward_export``: the same values as :meth:`forward`, without the outputs used only by the loss.
+        """
+        tokens, queries, reference, _ = self._queries(x)
+        query_states, _ = self.backbone.forward_l2(tokens, queries)
+        outputs_class, outputs_coord = self._predict(self.backbone.vit.norm(query_states[-1]), reference)
+        return outputs_coord, outputs_class
+
+    def _queries(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor | None, dict[str, Tensor] | None]:
+        """Run L1 and build the queries.
+
+        Args:
+            x: Normalized images of shape ``[B, 3, resolution, resolution]``.
+
+        Returns:
+            The ViT tokens after L1, the queries ``[B, Q, D]``, and, with ``selection`` only, the reference boxes
+            ``[B, Q, 4]`` and the first-stage outputs for ``enc_outputs`` (``None`` with ``learned``).
+        """
+        tokens = self.backbone.forward_l1(x)
+        if self.query_mode == "learned":
+            return tokens, self.query_feat.weight[None].expand(x.shape[0], -1, -1), None, None
+        # vit.norm only on this branch, as RF-DETR normalizes the features it exports; L2 gets the raw tokens
+        patches = self.backbone.vit.norm(tokens[:, self.backbone.num_prefix_tokens :])
+        boxes_b0, enc_logits, enc_boxes = self.selection(patches, self.backbone.grid_size)
+        reference = reparam_boxes(self.refpoint_embed.weight[None], boxes_b0)  # [B, Q, 4]
+        # as ref_point_head in RF-DETR's decoder: D / 2 frequencies per coordinate, 2D features
+        query_pos = self.ref_point_head(gen_sineembed_for_position(reference, self.backbone.embed_dim // 2))
+        queries = self.query_feat.weight[None] + query_pos
+        return tokens, queries, reference, {"pred_logits": enc_logits, "pred_boxes": enc_boxes}
+
+    def _predict(self, hs: Tensor, reference: Tensor | None) -> tuple[Tensor, Tensor]:
+        """Apply the shared head to normalized query states ``[..., Q, D]``: class logits and cxcywh boxes."""
+        outputs_class = self.class_embed(hs)
+        if reference is None:  # learned: absolute box
+            return outputs_class, self.bbox_embed(hs).sigmoid()
+        # always with respect to the reference, as lite_refpoint_refine in RF-DETR
+        return outputs_class, reparam_boxes(self.bbox_embed(hs), reference)

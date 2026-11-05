@@ -1,0 +1,19 @@
+# Local trial of the benchmark on the PC (GTX 1650), to check that the script works: its numbers are not the ones
+# of the thesis (configs/benchmark/a100.yaml). It differs from a100.yaml where the PC cannot do the same:
+# - coco_mini instead of COCO val2017;
+# - fp32: no bf16 on the GTX 1650;
+# - compile backend "eager": Windows has no triton for inductor, so torch.compile only captures the graph, with
+#   fullgraph checking that there is no graph break;
+# - a shorter warm-up, for 20 images.
+# Read by rfdetr.models.eodt.benchmark.load_benchmark_config: every key is required, an unknown one is an error.
+
+dataset_dir: C:/dev/tesi/data/coco_mini
+num_images: null  # all the 20 images
+num_workers: 0
+warmup_iters: 50
+device: cuda
+amp_dtype: null
+compile: true
+compile_mode: default
+compile_backend: eager
+fullgraph: true

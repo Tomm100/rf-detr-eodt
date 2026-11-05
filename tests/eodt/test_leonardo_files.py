@@ -10,6 +10,8 @@ The jobs run only on Leonardo; on the PC these tests check that:
   ``scripts/leonardo/train.sh`` sets;
 - ``prepare_offline.sh`` puts in the cache the DINOv2 weights of the three sizes for EoDT (timm) and for the baseline
   (Hugging Face), and its Python code downloads them and then loads them without internet;
+- ``benchmark.sh`` (step 13) measures EoDT, the rings of the baseline and RF-DETR's published checkpoints with the
+  A100 protocol on a reserved node, and ``prepare_offline.sh`` downloads those checkpoints;
 - the shell scripts have Unix line endings.
 """
 
@@ -24,6 +26,7 @@ import pytest
 import yaml
 
 from rfdetr.models.eodt import load_configs
+from rfdetr.models.eodt.benchmark import PUBLISHED
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIGS = ROOT / "configs" / "eodt"
@@ -115,10 +118,43 @@ def test_prepare_offline_caches_dinov2() -> None:
         assert f"facebook/dinov2-with-registers-small: {state}" in lines
 
 
+def test_benchmark_job() -> None:
+    """benchmark.sh measures every model of §6 with the A100 protocol, on a reserved node.
+
+    EoDT and the three rings of the baseline from their YAML files, and every published checkpoint of RF-DETR,
+    whose weights prepare_offline.sh downloads into RF_HOME with their MD5.
+    """
+    script = (ROOT / "scripts" / "leonardo" / "benchmark.sh").read_text(encoding="utf-8")
+    models = re.search(r'MODELS="\n(?P<paths>.*?)\n"', script, flags=re.DOTALL)
+    published = re.search(r'PUBLISHED="(?P<names>[^"]*)"', script)
+    prepare = (ROOT / "scripts" / "leonardo" / "prepare_offline.sh").read_text(encoding="utf-8")
+
+    assert "#SBATCH --exclusive" in script
+    assert "PROTOCOL=configs/benchmark/a100.yaml" in script
+    assert models is not None and published is not None
+    paths = models["paths"].split()
+    assert {Path(path).parent.name for path in paths} == {"eodt", "baseline"}
+    assert {Path(path).name for path in paths if "baseline" in path} == {
+        f"baseline_medium_{ring}.yaml" for ring in ("win", "nowin", "nowin_noproj")
+    }
+    for path in paths:
+        load_configs(ROOT / path)
+    assert published["names"].split() == list(PUBLISHED)
+    assert "for name in PUBLISHED:" in prepare and ".md5_hash" in prepare
+    env = (ROOT / "scripts" / "leonardo" / "env.sh").read_text(encoding="utf-8")
+    assert "export RF_HOME=$WORK_DIR/rfdetr_cache" in env
+
+
 def test_scripts_have_unix_line_endings() -> None:
     """The scripts for Leonardo keep Unix line endings even when written on Windows."""
     scripts = sorted((ROOT / "scripts" / "leonardo").glob("*.sh"))
 
-    assert {script.name for script in scripts} == {"env.sh", "overfit.sh", "prepare_offline.sh", "train.sh"}
+    assert {script.name for script in scripts} == {
+        "benchmark.sh",
+        "env.sh",
+        "overfit.sh",
+        "prepare_offline.sh",
+        "train.sh",
+    }
     for script in scripts:
         assert b"\r\n" not in script.read_bytes(), script.name

@@ -6,8 +6,8 @@
 #
 # It downloads the DINOv2 weights of the three sizes into HF_HOME, for EoDT (timm) and for the baseline (Hugging Face
 # facebook/dinov2-with-registers-*, read by RF-DETR's loader, EODT_SPEC.md §8 point 4), checks that they load without
-# internet as on the compute nodes, checks that COCO and coco_mini are in place and creates the folder of the SLURM
-# logs.
+# internet as on the compute nodes, downloads RF-DETR's published checkpoints of the latency benchmark into RF_HOME
+# and checks their MD5, checks that COCO and coco_mini are in place and creates the folder of the SLURM logs.
 set -eo pipefail
 source /leonardo_work/IscrC_EoDT/tcentonz/rf-detr-eodt/scripts/leonardo/env.sh
 
@@ -32,6 +32,25 @@ for size in sys.argv[1:]:
     print(f"facebook/dinov2-with-registers-{size}: {state}")
 EOF
 done
+
+# RF-DETR's published checkpoints for the latency benchmark (EODT_SPEC.md §6) into RF_HOME (env.sh), with their MD5
+mkdir -p "$RF_HOME"
+python - <<'EOF'
+import hashlib
+import os
+
+from rfdetr.assets.model_weights import ModelWeights, download_pretrain_weights
+from rfdetr.models.eodt.benchmark import PUBLISHED, published_config
+
+for name in PUBLISHED:
+    path = published_config(name).pretrain_weights
+    download_pretrain_weights(path)  # nothing to do if the file is already there
+    with open(path, "rb") as file:
+        md5 = hashlib.file_digest(file, "md5").hexdigest()
+    if md5 != ModelWeights.from_filename(os.path.basename(path)).md5_hash:
+        raise SystemExit(f"{path}: wrong MD5, delete the file and run this script again")
+    print(f"RF-DETR {name}: {path}")
+EOF
 
 # image counts of COCO 2017 (§6) and of coco_mini (CLAUDE.md)
 python - <<'EOF'
