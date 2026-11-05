@@ -49,7 +49,7 @@ def build_eodt_from_config(model_config: EoDTConfig, train_config: TrainConfig |
         pretrained=True,
     )
     # num_classes + 1 as in build_model: COCO category ids 1..90 are used directly as logit indices
-    return EoDT(backbone, model_config.num_queries, model_config.num_classes + 1)
+    return EoDT(backbone, model_config.num_queries, model_config.num_classes + 1, query_mode=model_config.query_mode)
 
 
 def build_eodt_criterion_from_config(
@@ -60,7 +60,7 @@ def build_eodt_criterion_from_config(
     """Build RF-DETR's criterion and postprocessor for EoDT.
 
     ``build_criterion_and_postprocessors`` is used unchanged; only the two namespace fields that describe
-    LWDETR's decoder are replaced with their EoDT meaning.
+    LWDETR's decoder and first stage are replaced with their EoDT meaning.
 
     Args:
         model_config: EoDT configuration.
@@ -73,6 +73,6 @@ def build_eodt_criterion_from_config(
     ns = _namespace_from_configs(model_config, train_config, defaults)
     # build_criterion_and_postprocessors weights dec_layers - 1 aux outputs: one per L2 block but the last
     ns.dec_layers = model_config.num_l2_blocks
-    # learned queries have no first stage: no enc_outputs and no "_enc" weights (step 11 derives it from query_mode)
-    ns.two_stage = False
+    # selection queries have a first stage, with its enc_outputs and "_enc" weights as in RF-DETR; learned have none
+    ns.two_stage = model_config.query_mode == "selection"
     return build_criterion_and_postprocessors(ns)

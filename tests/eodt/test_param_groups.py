@@ -56,7 +56,9 @@ def _train_config(**overrides: Any) -> TrainConfig:
 
 def _eodt(**overrides: Any) -> tuple[nn.Module, EoDTConfig]:
     """Build a small ViT-S EoDT with L2 = 3 unless overridden."""
-    model_config = EoDTConfig(**{"num_l2_blocks": 3, "resolution": 224, "num_queries": 10, **overrides})
+    model_config = EoDTConfig(
+        **{"num_l2_blocks": 3, "resolution": 224, "num_queries": 10, "query_mode": "learned", **overrides}
+    )
     torch.manual_seed(0)
     return build_model_from_config(model_config), model_config
 

@@ -57,10 +57,10 @@ def test_bf16_must_be_resolved(eodt_yaml: Callable[..., Path]) -> None:
 
 def test_wandb_tags() -> None:
     """The tags are the type of run and the model: eodt for EoDTConfig, baseline for RF-DETR's configurations."""
-    assert wandb_tags(EoDTConfig(num_l2_blocks=3), "run") == ["run", "eodt"]
+    assert wandb_tags(EoDTConfig(num_l2_blocks=3, query_mode="learned"), "run") == ["run", "eodt"]
     assert wandb_tags(RFDETRMediumConfig(pretrain_weights=None), "test") == ["test", "baseline"]
     with pytest.raises(ValueError, match="run_type"):
-        wandb_tags(EoDTConfig(num_l2_blocks=3), "debug")
+        wandb_tags(EoDTConfig(num_l2_blocks=3, query_mode="learned"), "debug")
 
 
 def test_stop_and_resume(eodt_yaml: Callable[..., Path], monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

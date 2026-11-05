@@ -139,7 +139,7 @@ def test_load_rfdetr_yaml() -> None:
         ),
         pytest.param(_set([*TRAIN_ARGS, "epoch"], 12), ValidationError, r"Unknown parameter\(s\): 'epoch'", id="typo"),
         pytest.param(_delete([*MODEL_ARGS, "num_l2_blocks"]), ValidationError, "num_l2_blocks", id="missing-l2"),
-        pytest.param(_set([*MODEL_ARGS, "query_mode"], "selection"), ValidationError, "query_mode", id="selection"),
+        pytest.param(_set([*MODEL_ARGS, "query_mode"], "mixed"), ValidationError, "query_mode", id="query-mode"),
         pytest.param(_set([*MODEL_ARGS, "group_detr"], 2), ValidationError, "group_detr", id="groups"),
     ],
 )

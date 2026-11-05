@@ -58,7 +58,9 @@ def test_forward_backward_coco_mini(
     coco_mini_batch: Callable,
 ) -> None:
     """Forward and backward with SetCriterion on 2 coco_mini images: finite loss, gradient on every parameter."""
-    model_config = EoDTConfig(backbone_name=backbone_name, num_l2_blocks=num_l2_blocks, resolution=resolution)
+    model_config = EoDTConfig(
+        backbone_name=backbone_name, num_l2_blocks=num_l2_blocks, resolution=resolution, query_mode="learned"
+    )
     train_config = coco_mini_train_config()
     samples, targets = coco_mini_batch(model_config, train_config)
     model, criterion = _model_and_criterion(model_config, train_config)
@@ -83,7 +85,7 @@ def test_aux_loss_weights(
     num_l2_blocks: int, coco_mini_train_config: Callable[..., TrainConfig], coco_mini_batch: Callable
 ) -> None:
     """One weight per L2 block but the last, no "_enc" weight, and every computed loss has a weight."""
-    model_config = EoDTConfig(num_l2_blocks=num_l2_blocks, resolution=224)
+    model_config = EoDTConfig(num_l2_blocks=num_l2_blocks, resolution=224, query_mode="learned")
     train_config = coco_mini_train_config()
     samples, targets = coco_mini_batch(model_config, train_config)
     model, criterion = _model_and_criterion(model_config, train_config)
@@ -100,7 +102,7 @@ def test_aux_loss_weights(
 
 def test_cls_loss_coef_reaches_criterion() -> None:
     """The classification coefficient of the training configuration weights the final and the aux losses."""
-    model_config = EoDTConfig(num_l2_blocks=3)
+    model_config = EoDTConfig(num_l2_blocks=3, query_mode="learned")
     train_config = TrainConfig(dataset_dir=".", multi_scale="off", cls_loss_coef=2.0)
 
     criterion, _ = build_criterion_from_config(model_config, train_config)

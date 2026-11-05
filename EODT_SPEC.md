@@ -14,7 +14,7 @@
 | L2 | 3 per ViT-S e ViT-B, 4 per ViT-L (come EoMT); **obbligatorio in ogni YAML**, nessun default nel codice | deciso, da ablare | §3.2 |
 | Query | due modalità, scelte da configurazione. **Modello principale: `selection`** (stesso tipo di query della baseline RF-DETR, così l'ultimo anello della catena isola il solo decoder). **`learned` (come EoMT) è un'ablazione** | deciso | §3.3 |
 | Numero di query | Q = 300, configurabile | deciso | §3.3 |
-| Box | `learned`: box assoluto; `selection`: Δ sempre rispetto a b0 | deciso | §3.5 |
+| Box | `learned`: box assoluto; `selection`: Δ sempre rispetto al riferimento (b0 + offset `refpoint_embed`) | deciso | §3.5 |
 | Testa | una sola, condivisa da tutti i blocchi L2; prima della testa la norm finale pre-addestrata del ViT (`vit.norm`), come EoMT | deciso | §3.5 |
 | Group-DETR | due alternative a confronto: (a) niente gruppi, che è anche la prima versione; (b) gruppi con patch isolati | deciso (Niccolò) | §4 |
 | Baseline | RF-DETR senza Group-DETR, configurazione Medium sul ViT-S (576 px, 4 layer di decoder, 300 query); decoder scritto nel YAML | deciso | §5 |
@@ -90,7 +90,7 @@ La costruzione delle query è **opzionale e si sceglie da configurazione** con `
 | `query_mode` | Query | Box | `enc_outputs` |
 |---|---|---|---|
 | `learned` (come EoMT) | `nn.Embedding(Q, D)`, uguali per ogni immagine | predetto direttamente dalla testa | assente |
-| `selection` (come RF-DETR) | contenuto learnable + encoding di b0 | b0 + Δ | presente |
+| `selection` (come RF-DETR) | contenuto learnable + encoding del riferimento | riferimento + Δ | presente |
 
 Q è configurabile, default 300 (EoMT ne usa 200). Nella modalità `selection`, Q è il numero di patch selezionati (top-Q).
 
@@ -98,7 +98,7 @@ Q è configurabile, default 300 (EoMT ne usa 200). Nella modalità `selection`, 
 
 **Modalità `selection` (come RF-DETR).** Riprende la selection a due stadi di RF-DETR (`ref-rfdetr/src/rfdetr/models/transformer.py`, `Transformer.forward`, ramo `if self.two_stage`), adattata a **una sola scala**: i patch in uscita da L1.
 
-1. Prendi i soli token dei patch in uscita da L1.
+1. Prendi i soli token dei patch in uscita da L1 e applica `vit.norm`, come RF-DETR applica la norm finale di DINOv2 a ogni feature intermedia esportata (`apply_layernorm`). La norm vale solo per questo ramo: in L2 entrano i token grezzi di L1.
 2. Genera le proposte con `gen_encoder_output_proposals` (stesso file), usando una sola scala e `unsigmoid=False` (perché `bbox_reparam=True`).
 3. Applica `Linear` + `LayerNorm` (l'equivalente di `enc_output` / `enc_output_norm`), poi la testa di classe (`enc_out_class_embed`).
 4. **Top-Q** in base al massimo punteggio di classe.
@@ -106,11 +106,14 @@ Q è configurabile, default 300 (EoMT ne usa 200). Nella modalità `selection`, 
    - centro = Δxy · wh_proposta + xy_proposta;
    - dimensioni = exp(Δwh) · wh_proposta.
 
-   Il risultato è il **box iniziale b0**, che viene staccato dal grafo (`detach`) come in RF-DETR.
-6. Costruisci il token di ogni query come **contenuto learnable** (`nn.Embedding(Q, D)`) + **encoding del box**: `gen_sineembed_for_position(b0)` seguito da un MLP, come `ref_point_head` nel decoder di RF-DETR.
-7. Le uscite di questo stadio (classi e box b0 prima del detach) vanno in `enc_outputs`, per la loss del primo stadio, come in RF-DETR.
+   Il risultato è il **box iniziale b0**, che viene staccato dal grafo (`detach`) come in RF-DETR. Il detach riguarda solo b0: la loss del primo stadio arriva anche ai blocchi L1, come in RF-DETR arriva al backbone.
+6. Come in RF-DETR, a b0 si applica un **offset imparato** `refpoint_embed` (`nn.Embedding(Q, 4)`, a zero all'inizio, indicizzato per posizione nel top-Q) con la stessa formula `bbox_reparam`: il risultato è il **riferimento**. All'inizio il riferimento coincide con b0.
+7. Costruisci il token di ogni query come **contenuto learnable** (`nn.Embedding(Q, D)`, come `query_feat` di RF-DETR) + **encoding del riferimento**: `gen_sineembed_for_position(riferimento)` seguito da un MLP, come `ref_point_head` nel decoder di RF-DETR. I due termini si sommano una volta sola, all'ingresso di L2. In ogni blocco L2 la testa predice Δ rispetto al riferimento (come `lite_refpoint_refine` di RF-DETR); i box non sono limitati a [0, 1], come in RF-DETR.
+8. Le uscite di questo stadio (classi e box b0 prima del detach e senza offset) vanno in `enc_outputs`, per la loss del primo stadio: stesso `SetCriterion`, matching ungherese sulle Q proposte, pesi `_enc` uguali a quelli finali, come in RF-DETR.
 
-**Inizializzazione dell'ultimo strato di `bbox_embed`:** dipende dalla modalità. In `learned` il box è assoluto: inizializzazione di default di `nn.Linear`, come DETR (con lo zero tutte le query partirebbero dallo stesso box). In `selection` il box è Δ rispetto a b0: **peso e bias a zero**, come RF-DETR, così all'inizio ogni query predice il proprio b0. Il bias di `class_embed` parte da una probabilità a priori di 0,01 in entrambe le modalità, costante nel codice come in `LWDETR`.
+**Limite di risoluzione per `selection`:** `gen_encoder_output_proposals` azzera le proposte con coordinate fuori da (0,01; 0,99). Con griglia ≥ 50 (≥ 800 px a patch 16) l'anello esterno di patch ha proposte nulle: se uno di quei patch viene selezionato, il suo box ha dimensione 0 e non riceve gradiente. RF-DETR ha lo stesso comportamento, quindi non si aggiunge un validatore (si manterrebbe la parità con la baseline); alle risoluzioni previste (576, 640, 704) non succede. Da riconsiderare solo se si va a ≥ 800 px.
+
+**Inizializzazione dell'ultimo strato di `bbox_embed`:** dipende dalla modalità. In `learned` il box è assoluto: inizializzazione di default di `nn.Linear`, come DETR (con lo zero tutte le query partirebbero dallo stesso box). In `selection` il box è Δ rispetto al riferimento: **peso e bias a zero**, come RF-DETR, così all'inizio ogni query predice il proprio riferimento (cioè b0, perché `refpoint_embed` parte da zero). Il bias di `class_embed` parte da una probabilità a priori di 0,01 in entrambe le modalità, costante nel codice come in `LWDETR`.
 
 > **Ruolo delle due modalità:** `selection` è il **modello principale** di EoDT: la baseline RF-DETR usa la query selection, quindi solo con `selection` il confronto "baseline senza projector → EoDT" cambia il solo decoder. `learned` è un'**ablazione** nello stile di EoMT (query imparate, come Mask2Former ed EoMT): mostra se un detector encoder-only ha bisogno della query selection. Con `learned` la convergenza è più lenta (overfit del passo 5).
 >
@@ -130,7 +133,7 @@ Q è configurabile, default 300 (EoMT ne usa 200). Nella modalità `selection`, 
 - Si applica **dopo ogni blocco L2**, sui soli token delle query.
 - Box, a seconda di `query_mode`:
   - `learned`: box assoluto, `sigmoid(bbox_embed(query))`, in ogni blocco L2;
-  - `selection`: **Δ sempre rispetto a b0**, non al box del blocco precedente. È il comportamento di RF-DETR con `lite_refpoint_refine=True` e `bbox_reparam=True` (vedi `LWDETR.forward` in `ref-rfdetr/src/rfdetr/models/lwdetr.py`).
+  - `selection`: **Δ sempre rispetto al riferimento** (b0 + offset `refpoint_embed`, §3.3), non al box del blocco precedente. È il comportamento di RF-DETR con `lite_refpoint_refine=True` e `bbox_reparam=True` (vedi `LWDETR.forward` in `ref-rfdetr/src/rfdetr/models/lwdetr.py`).
 - Uscita in formato RF-DETR, così `SetCriterion` e `PostProcess` funzionano senza modifiche:
 
 ```python
@@ -240,7 +243,7 @@ La baseline è **RF-DETR riaddestrato con lo stesso training di EoDT**, senza Gr
 - learning rate = `lr_encoder` · 0,8^(n + 1 − id) · 0,7², con n = profondità + 1 (13 per ViT-S e ViT-B, 25 per ViT-L) e id = 0 per gli embedding (patch, pos, CLS, registri), i + 1 per il blocco i, n + 1 per la norm finale. Quindi ultimo blocco ×0,8², embedding ×0,8¹⁴;
 - **i blocchi L2 seguono la stessa formula degli altri blocchi**: sono blocchi pre-addestrati di DINOv2, non strati nuovi;
 - weight decay 0 su embedding, bias e norm; `weight_decay` sugli altri pesi, layer scale compreso;
-- query, `class_embed` e `bbox_embed` (nuovi): learning rate `lr` = 1e-4, come query e teste di RF-DETR.
+- moduli nuovi: learning rate `lr` = 1e-4, come query e teste di RF-DETR. Sono: query (`learned`) o `query_feat`, `refpoint_embed` e `ref_point_head` (`selection`), `class_embed`, `bbox_embed` e il primo stadio della selezione (`enc_output`, `enc_output_norm`, `enc_out_class_embed`, `enc_out_bbox_embed`). Unica differenza consapevole da RF-DETR: lì `ref_point_head` sta nel decoder e prende `lr` · 0,7 (`lr_component_decay`); in EoDT il decoder non c'è, e `ref_point_head` è un modulo nuovo come le query, quindi prende `lr`.
 
 **Valori di partenza** (prima run e confronto con la baseline, passi 6 e 9): batch totale 16, 12 epoch, `warmup_epochs: 1`, seed 0. Non sono definitivi: si rifiniscono al passo 10 (§7.2). Note:
 - la schedule `cosine` dipende dal numero di epoch: run con epoch diverse non sono confrontabili tra loro, solo EoDT e baseline alla stessa durata;
@@ -312,7 +315,7 @@ Ogni passo si chiude **solo** quando il suo test passa. Poi l'agente si ferma: r
 | 7 | **Decisione sulla baseline** con Niccolò (compito mio, non dell'agente): configurazione, finestre, quale run lanciare per prima | §5 aggiornata, [DA CONFERMARE] risolti, file YAML in `configs/baseline/`. |
 | 8 | Implementazione della baseline (§5, §8 punti 4 e 5): conversione DINOv2 14→16 con registri, opzione senza projector. **Il codice si può scrivere anche prima del passo 7**, perché risoluzione e layer del decoder sono solo valori nel YAML. | Caricamento DINOv2 a patch 16 con registri senza chiavi mancanti. Tutte le run della catena si costruiscono solo da YAML. **Test di equivalenza** tra il fork e `ref-rfdetr/` (stesso checkpoint, stessa immagine, output identico) sulla configurazione originale, per verificare che le modifiche non abbiano cambiato RF-DETR. Overfit su 20 immagini anche per la baseline. **Esito (passo 8c): PASS.** Overfit della baseline senza finestre (`baseline_medium_nowin_overfit.yaml`) con setup e criteri del passo 5 (2.400 step, 71 min sulla GTX 1650, picco 2,95 GB): modello ed EMA con mAP 50:95 1,000 e AP50 1,000; `loss_giou` dell'ultimo layer del decoder 0,0015. La baseline converge più in fretta di EoDT `learned` (mAP 50:95 ≥ 0,85 intorno all'epoch 185): atteso, perché le query passano per un decoder dedicato; non è un confronto di prestazioni. In locale, su Windows, serve `PYTHONIOENCODING=utf-8` (la tabella di `rich` non si scrive in cp1252). |
 | | **EoDT `selection` (modello principale)** | |
-| 9 | Query `selection` | Top-Q corretto. b0 senza gradiente. Con Δ = 0 il box è uguale a b0. `enc_outputs` presente. Il cambio di `query_mode` avviene solo da YAML. Ripetere i test 4 e 5 (compreso l'overfit su coco_mini con gli stessi criteri), e verificare che `learned` funzioni ancora. |
+| 9 | Query `selection` | Top-Q corretto. b0 senza gradiente. Con Δ = 0 il box è uguale al riferimento (uguale a b0 con `refpoint_embed` a zero, cioè all'inizio). `enc_outputs` presente. Il cambio di `query_mode` avviene solo da YAML. Ripetere i test 4 e 5 (compreso l'overfit su coco_mini con gli stessi criteri), e verificare che `learned` funzioni ancora. |
 | | **Confronto e ricetta** | |
 | 10 | **Due run insieme**: EoDT `selection` e baseline, ViT-S, stessa ricetta di partenza e stesse epoch | Entrambe completate, curve su W&B confrontabili (stesse metriche, stessi intervalli di valutazione). |
 | 11 | **Rifinitura della ricetta** (§7.2), guardando entrambe le run | Ogni modifica provata su EoDT e baseline. Ricetta finale scritta in §7.1, con l'elenco delle configurazioni provate. La run `learned` (ablazione) si rifà con la ricetta finale. |

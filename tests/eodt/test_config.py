@@ -23,7 +23,7 @@ from rfdetr.models.eodt import EoDTConfig
 
 def test_defaults_from_spec() -> None:
     """Backbone, resolution, patch size and queries default to the values of the specification."""
-    config = EoDTConfig(num_l2_blocks=3)
+    config = EoDTConfig(num_l2_blocks=3, query_mode="learned")
 
     assert config.backbone_name == "vit_small_patch14_reg4_dinov2"  # §3.1
     assert config.resolution == 576  # §3.1
@@ -40,17 +40,17 @@ def test_defaults_from_spec() -> None:
 def test_num_l2_blocks_required(kwargs: dict[str, Any]) -> None:
     """L2 has no default in the code and must be at least 1."""
     with pytest.raises(ValidationError, match="num_l2_blocks"):
-        EoDTConfig(**kwargs)
+        EoDTConfig(query_mode="learned", **kwargs)
 
 
 @pytest.mark.parametrize(
     ("name", "value"),
-    [("query_mode", "selection"), ("group_detr", 13), ("num_windows", 2)],
+    [("query_mode", "mixed"), ("group_detr", 13), ("num_windows", 2)],
 )
 def test_single_value_fields(name: str, value: Any) -> None:
-    """Only learned queries, one query group and global attention for now."""
+    """Only learned or selection queries, one query group and global attention for now."""
     with pytest.raises(ValidationError, match=name):
-        EoDTConfig(num_l2_blocks=3, **{name: value})
+        EoDTConfig(**{"num_l2_blocks": 3, "query_mode": "learned", name: value})
 
 
 @pytest.mark.parametrize(
@@ -73,12 +73,12 @@ def test_single_value_fields(name: str, value: Any) -> None:
 def test_unused_fields_rejected(name: str, value: Any) -> None:
     """A value that EoDT would silently ignore is an error that names the field."""
     with pytest.raises(ValidationError, match=name):
-        EoDTConfig(num_l2_blocks=3, **{name: value})
+        EoDTConfig(**{"num_l2_blocks": 3, "query_mode": "learned", name: value})
 
 
 def test_unused_field_assignment_rejected() -> None:
     """The same check runs when a field is assigned after construction."""
-    config = EoDTConfig(num_l2_blocks=3)
+    config = EoDTConfig(num_l2_blocks=3, query_mode="learned")
     with pytest.raises(ValidationError, match="gradient_checkpointing"):
         config.gradient_checkpointing = True
 
@@ -87,6 +87,7 @@ def test_used_fields_accepted() -> None:
     """Fields read by EoDT, the loss or the training pipeline can be changed."""
     config = EoDTConfig(
         num_l2_blocks=4,
+        query_mode="learned",
         backbone_name="vit_large_patch14_reg4_dinov2",
         resolution=640,
         num_queries=200,

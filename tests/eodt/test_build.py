@@ -38,7 +38,15 @@ def _images(batch_size: int, resolution: int = RESOLUTION) -> Tensor:
 
 def _config(**overrides: Any) -> EoDTConfig:
     """Return a small ViT-S configuration, with L2 = 3 unless overridden."""
-    return EoDTConfig(**{"num_l2_blocks": 3, "resolution": RESOLUTION, "num_queries": NUM_QUERIES, **overrides})
+    return EoDTConfig(
+        **{
+            "num_l2_blocks": 3,
+            "resolution": RESOLUTION,
+            "num_queries": NUM_QUERIES,
+            "query_mode": "learned",
+            **overrides,
+        }
+    )
 
 
 def _build(config: EoDTConfig, train_config: TrainConfig | None = None) -> EoDT:

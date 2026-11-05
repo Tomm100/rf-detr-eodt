@@ -37,8 +37,12 @@ _USED_FIELDS = frozenset(
 )
 
 
+#: How the queries of EoDT are built (EODT_SPEC.md §3.3).
+QueryMode = Literal["learned", "selection"]
+
+
 class EoDTConfig(ModelConfig):
-    """Architecture configuration of EoDT (``query_mode = "learned"``).
+    """Architecture configuration of EoDT.
 
     It is a ``ModelConfig`` because ``RFDETRModelModule``, ``RFDETRDataModule`` and ``build_trainer`` read
     ``ModelConfig`` fields. The decoder and projector fields of LWDETR are ``None``, and every other field
@@ -48,10 +52,12 @@ class EoDTConfig(ModelConfig):
         backbone_name: timm name of the DINOv2 backbone. The register tokens are determined by the name.
         num_l2_blocks: Number of final ViT blocks that also process the queries (L2). No default: every
             configuration sets it, because it depends on the backbone size.
-        query_mode: How the queries are built. Only ``"learned"`` (as EoMT) for now.
+        query_mode: How the queries are built (§3.3): ``"selection"`` (as RF-DETR, the main model) or ``"learned"``
+            (as EoMT, an ablation). No default: a missing key must not start one of the two in silence.
         resolution: Side of the square input image, in pixels.
         patch_size: Patch size the pretrained DINOv2 weights are resampled to.
-        num_queries: Number of queries Q.
+        num_queries: Number of queries Q. With ``selection`` at most the number of patches, among which the queries
+            are selected.
         group_detr: Number of query groups. Only 1 (no Group-DETR) for now.
         num_windows: Global attention, no windows. Read by the data module to pad the batch.
         positional_encoding_size: Not used by EoDT (timm interpolates its own ``pos_embed``), but read as an
@@ -61,7 +67,7 @@ class EoDTConfig(ModelConfig):
 
     backbone_name: str = "vit_small_patch14_reg4_dinov2"
     num_l2_blocks: int = Field(ge=1)
-    query_mode: Literal["learned"] = "learned"
+    query_mode: QueryMode
     resolution: int = 576
     patch_size: int = 16
     num_queries: int = 300
@@ -93,4 +99,15 @@ class EoDTConfig(ModelConfig):
             value = expected.get(name, field.get_default(call_default_factory=True))
             if getattr(self, name) != value:
                 raise ValueError(f"'{name}' is not used by EoDT and must be {value!r}")
+        return self
+
+    @model_validator(mode="after")
+    def _check_num_queries(self) -> EoDTConfig:
+        """With ``selection`` the Q queries are Q distinct patches: there must be at least Q of them."""
+        num_patches = (self.resolution // self.patch_size) ** 2
+        if self.query_mode == "selection" and self.num_queries > num_patches:
+            raise ValueError(
+                f"with query_mode 'selection' num_queries ({self.num_queries}) must be at most the number of patches "
+                f"({num_patches} at resolution {self.resolution} and patch_size {self.patch_size})"
+            )
         return self

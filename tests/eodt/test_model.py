@@ -46,7 +46,7 @@ def _model(
     """Return a ViT-S EoDT with a fixed seed."""
     torch.manual_seed(0)
     backbone = EoDTBackbone(VITS, resolution, PATCH_SIZE, num_l2_blocks, pretrained=pretrained)
-    return EoDT(backbone, num_queries, NUM_CLASSES)
+    return EoDT(backbone, num_queries, NUM_CLASSES, query_mode="learned")
 
 
 def _all_predictions(out: dict) -> list[dict[str, Tensor]]:
@@ -255,4 +255,4 @@ def test_invalid_arguments(num_queries: int, num_classes: int) -> None:
     """At least one query and one class."""
     backbone = EoDTBackbone(VITS, RESOLUTION, PATCH_SIZE, 3, pretrained=False)
     with pytest.raises(ValueError, match="num_queries|num_classes"):
-        EoDT(backbone, num_queries, num_classes)
+        EoDT(backbone, num_queries, num_classes, query_mode="learned")
