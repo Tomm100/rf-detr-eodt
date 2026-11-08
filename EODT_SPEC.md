@@ -335,7 +335,9 @@ Ogni passo si chiude **solo** quando il suo test passa. Poi l'agente si ferma: r
 
 ## 10. Fuori dalla specifica (per ora)
 
-Export, segmentazione, keypoint, modelli Plus, CUDA graphs, FP8, NAS, Objects365.
+Export, segmentazione, keypoint, modelli Plus (pacchetto `rfdetr_plus` e relativi checkpoint), CUDA graphs, FP8, NAS, Objects365.
+
+Eccezione (Niccolò, 06/11/2026): le **architetture** XL, 2XL e Max della Tabella 7 di RF-DETR rientrano nel benchmark di latenza (costruite dalla tabella, pesi casuali, §6), e la Max viene addestrata "as is" come upper bound (§9, riga 11). Non si usano il pacchetto `rfdetr_plus` né i suoi checkpoint.
 
 ## 11. Ambienti
 

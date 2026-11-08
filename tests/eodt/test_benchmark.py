@@ -15,8 +15,9 @@ Covers:
   ``compare`` command apply the 2% criterion and fail a model not compiled or not in the precision of the protocol.
 - A run on coco_mini writes a complete record, and a model that does not compile is measured without compiling.
 - ``torch.topk`` can be imposed, also on a compiled model: the check of the compiled model with the same top-Q.
-- ``scripts/leonardo/diagnose_compile.py`` runs its cases and reports a failure without stopping. Windows has no triton,
-  so only the graph capture is tested here: what Inductor does is seen only on Leonardo.
+- ``scripts/leonardo/diagnose_compile.py`` runs its cases and reports a failure without stopping, and its rewrites of
+  ``gen_encoder_output_proposals`` give the bits of the original and reach the real models. Windows has no triton, so
+  only the graph capture is tested here: what Inductor does is seen only on Leonardo.
 """
 
 import importlib.util
@@ -51,6 +52,7 @@ from rfdetr.models.eodt.benchmark import (
     run_benchmark,
 )
 from rfdetr.models.lwdetr import build_model_from_config
+from rfdetr.models.transformer import gen_encoder_output_proposals
 from rfdetr.models.weights import load_pretrain_weights
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -69,20 +71,25 @@ MODEL_YAMLS = {
     "baseline_nowin": CONFIGS / "baseline" / "baseline_medium_nowin.yaml",
     "baseline_nowin_noproj": CONFIGS / "baseline" / "baseline_medium_nowin_noproj.yaml",
 }
-_CASE_NAMES = (
-    "first_stage",
+_REWRITES = ("no_single_cat", "stack_xywh", "valid_before_cat")
+_CASES_WITH_PROPOSALS = (
     "proposals",
+    "first_stage",
+    "eodt_queries",
+    "eodt_selection",
+    "baseline_transformer",
+    "baseline_medium_win",
+)
+_CASE_NAMES = (
+    *_CASES_WITH_PROPOSALS,
     "topk_gather",
     "reparam",
     "reparam_select",
     "reparam_chain",
     "reparam_chain_select",
     "sine_embedding",
-    "eodt_queries",
-    "eodt_selection",
     "eodt_learned",
-    "baseline_transformer",
-    "baseline_medium_win",
+    *(f"{case}_{rewrite}" for case in _CASES_WITH_PROPOSALS for rewrite in _REWRITES),
 )
 EODT_COMPONENTS = {"vit_l1", "vit_l2", "first_stage", "heads"}
 LWDETR_COMPONENTS = {"vit", "projector", "first_stage", "decoder", "heads"}
@@ -536,13 +543,79 @@ def test_diagnosis_reports_a_failure_and_continues(
     def broken(run: Any) -> tuple[nn.Module, tuple[Tensor]]:
         return _GraphBreak(), (run.randn(1, 3, 4, 4),)
 
-    results = diagnose.run_cases({"broken": broken, "reparam": diagnose.reparam}, config)
+    results = diagnose.run_cases({"broken": diagnose.Case(broken), "reparam": diagnose.CASES["reparam"]}, config)
     diagnose.print_summary(results)
     out = capsys.readouterr().out
 
-    assert set(results["broken"]) == {"bf16", "fp32", "bf16, no index propagation"}
+    assert set(results["broken"]) == {"bf16", "fp32", "bf16, no index propagation", "bf16, no unrolled reductions"}
     assert all(error is not None and seconds > 0 for seconds, error in results["broken"].values())
     assert set(results["reparam"]) == {"bf16", "fp32"} and results["reparam"]["bf16"][1] is None
     assert "Traceback (most recent call last)" in out
     assert "--- broken | bf16: FAIL in" in out and "--- reparam | bf16: ok in" in out
     assert "broken | fp32: Unsupported" in out[out.index("\nErrors\n") :]
+
+
+def _same_bits(first: Tensor, second: Tensor) -> bool:
+    """Whether two tensors have the same type, shape and bytes: ``torch.equal`` does not tell 0.0 from -0.0."""
+    return (
+        first.dtype == second.dtype
+        and first.shape == second.shape
+        and first.float().cpu().numpy().tobytes() == second.float().cpu().numpy().tobytes()
+    )
+
+
+def _padding_mask(shapes: list[tuple[int, int]], batch: int, device: str) -> Tensor:
+    """Return a padding mask with images of different sizes and, with more images, one that is all padding."""
+    levels = []
+    for height, width in shapes:
+        level = torch.zeros(batch, height, width, dtype=torch.bool, device=device)
+        level[0, -1:, :] = True
+        level[0, :, -1:] = True
+        if batch > 1:
+            level[-1] = True  # no valid row or column: a division by zero, then overwritten
+        levels.append(level.flatten(1))
+    return torch.cat(levels, 1)
+
+
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.gpu)])
+@pytest.mark.parametrize("rewrite", _REWRITES)
+def test_rewritten_proposals_are_identical_bit_by_bit(
+    monkeypatch: pytest.MonkeyPatch, rewrite: str, device: str
+) -> None:
+    """In eager mode every rewrite gives the bits of the original: padding mask, unsigmoid, levels, batch, precision."""
+    function = _diagnose_script(monkeypatch).REWRITES[rewrite]
+    generator = torch.Generator().manual_seed(0)
+    assert not _same_bits(torch.tensor([0.0]), torch.tensor([-0.0]))  # the comparison sees the sign of a zero
+
+    for shapes in ([(4, 6)], [(4, 6), (2, 3)]):
+        for batch in (1, 3):
+            size = sum(height * width for height, width in shapes)
+            noise = torch.randn(batch, size, 8, generator=generator).to(device)
+            for dtype in (torch.float32, torch.bfloat16):
+                memory = noise.to(dtype)
+                for mask in (None, _padding_mask(shapes, batch, device)):
+                    for unsigmoid in (True, False):
+                        original = gen_encoder_output_proposals(memory, mask, shapes, unsigmoid=unsigmoid)
+                        rewritten = function(memory, mask, shapes, unsigmoid=unsigmoid)
+                        where = (shapes, batch, dtype, mask is None, unsigmoid)
+                        assert _same_bits(rewritten[0], original[0]), where
+                        assert _same_bits(rewritten[1], original[1]), where
+
+
+@pytest.mark.parametrize("case", ["first_stage", "baseline_transformer"])
+def test_rewrite_reaches_the_real_models(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str) -> None:
+    """During an attempt the model calls the rewrite, also when compiled, and afterwards the original is back."""
+    diagnose = _diagnose_script(monkeypatch)
+    config = load_benchmark_config(_capture_only_protocol(tmp_path))
+    calls: list[int] = []
+
+    def counting(*args: Any, **kwargs: Any) -> tuple[Tensor, Tensor]:
+        calls.append(1)
+        return gen_encoder_output_proposals(*args, **kwargs)
+
+    run = diagnose.Run(torch.device("cpu"), None)
+    _, error = diagnose.attempt(diagnose.Case(diagnose.CASES[case].build, counting), run, config)
+
+    assert error is None and calls
+    assert diagnose.rfdetr_transformer.gen_encoder_output_proposals is gen_encoder_output_proposals
+    assert diagnose.query_selection.gen_encoder_output_proposals is gen_encoder_output_proposals
