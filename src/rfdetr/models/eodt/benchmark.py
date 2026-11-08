@@ -23,7 +23,7 @@ import platform
 import statistics
 import time
 import warnings
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from importlib.metadata import version
 from pathlib import Path
@@ -259,6 +259,105 @@ def _inference_context(device: torch.device, amp_dtype: str | None) -> Iterator[
         yield
 
 
+def _compile(model: Callable[..., Any], config: BenchmarkConfig) -> Callable[..., Any]:
+    """Compile a model or a function with the settings of the protocol; the work happens at the first call."""
+    return torch.compile(
+        model,
+        mode=config.compile_mode,
+        backend=config.compile_backend,
+        fullgraph=config.fullgraph,
+        dynamic=False,
+    )
+
+
+@contextmanager
+def _patched_topk(imposed: Tensor | None = None) -> Iterator[list[Tensor]]:
+    """Inside the context ``torch.topk`` records its indices or, with ``imposed``, returns those instead.
+
+    The models of the benchmark call it once per forward, to select the top-Q patches of the first stage, and read
+    only the indices. Dynamo inlines this function, so ``imposed`` reaches a compiled model too.
+
+    Args:
+        imposed: Indices ``[B, Q]`` to return instead of computing the ranking.
+
+    Yields:
+        The list where the indices computed by the real ``torch.topk`` are recorded.
+    """
+    original = torch.topk
+    recorded: list[Tensor] = []
+
+    def topk(*args: Any, **kwargs: Any) -> tuple[Tensor | None, Tensor]:
+        if imposed is not None:
+            return None, imposed
+        values, indices = original(*args, **kwargs)
+        recorded.append(indices)
+        return values, indices
+
+    torch.topk = topk  # type: ignore[assignment]
+    try:
+        yield recorded
+    finally:
+        torch.topk = original
+
+
+def _max_abs_diff(outputs: tuple[Tensor, Tensor], reference: tuple[Tensor, Tensor]) -> dict[str, float]:
+    """Largest difference of scores and boxes between two ``(boxes, logits)``, query by query."""
+    return {
+        "scores": (outputs[1].float().sigmoid() - reference[1].float().sigmoid()).abs().max().item(),
+        "boxes": (outputs[0].float() - reference[0].float()).abs().max().item(),
+    }
+
+
+def _same_top_q_check(
+    model: nn.Module,
+    image: Tensor,
+    reference: tuple[Tensor, Tensor],
+    top_q: Tensor,
+    config: BenchmarkConfig,
+    compiled: bool,
+    amp_dtype: str | None,
+) -> dict[str, Any]:
+    """Compare the model with the eager fp32 reference with the same patches selected, in the same order.
+
+    A small numerical difference can change the top-Q ranking of the first stage. The query in position i gets the
+    i-th ``query_feat`` and ``refpoint_embed``, so a different ranking is not a permutation of the outputs, and the
+    query-by-query difference is about 1 even when the computation is right. Imposing the ranking of the reference
+    leaves only the numerical differences.
+
+    Args:
+        model: A model from :func:`build_inference_model`, not compiled.
+        image: Input ``[1, 3, R, R]``, already on the device of the model.
+        reference: ``(boxes, logits)`` of the eager fp32 model on ``image``.
+        top_q: Top-Q indices ``[1, Q]`` of the eager fp32 model on ``image``.
+        config: The settings of the run.
+        compiled: Whether the run was compiled.
+        amp_dtype: The precision of the run.
+
+    Returns:
+        How many positions of the ranking and how many selected patches change in eager mode in the precision of the
+        run, and, with the ranking imposed, the largest differences of eager from eager fp32 (the precision alone) and
+        of compiled from eager (the compilation alone; ``None`` if the run was not compiled, or the error if this
+        second compilation fails).
+    """
+    with _inference_context(image.device, amp_dtype), _patched_topk() as ranking:
+        model(image)
+    with _inference_context(image.device, amp_dtype), _patched_topk(top_q):
+        eager = model(image)
+        compiled_vs_eager = None
+        if compiled:
+            torch._dynamo.reset()
+            try:
+                compiled_vs_eager = _max_abs_diff(_compile(model, config)(image), eager)
+            except Exception as error:  # noqa: BLE001 - the timings of the run are already measured
+                compiled_vs_eager = {"error": repr(error)}
+    return {
+        "positions_changed": (ranking[0] != top_q).sum().item(),
+        "patches_changed": top_q.numel() - torch.isin(top_q, ranking[0]).sum().item(),
+        "eager_vs_eager_fp32": _max_abs_diff(eager, reference),
+        "compiled_vs_eager": compiled_vs_eager,
+    }
+
+
 def measure_latency(model: nn.Module, images: DataLoader, config: BenchmarkConfig) -> dict[str, Any]:
     """Time the forward of the model on every image, after compilation and warm-up.
 
@@ -273,28 +372,22 @@ def measure_latency(model: nn.Module, images: DataLoader, config: BenchmarkConfi
 
     Returns:
         Latency in ms (mean, median, standard deviation, 95th percentile), FPS, time of the first call, peak memory,
-        what was actually compiled and in which precision, the errors that forced a fallback, and the largest
-        difference of scores and boxes from the eager fp32 model on the first image.
+        what was actually compiled and in which precision, the errors that forced a fallback, the largest difference
+        of scores and boxes from the eager fp32 model on the first image, query by query, and the check with the same
+        top-Q of :func:`_same_top_q_check` (``None`` for a model without top-Q selection).
     """
     device = torch.device(config.device)
     model.to(device)
     first = next(iter(images)).to(device)
-    with torch.no_grad():
-        reference_boxes, reference_logits = model(first)
+    with torch.no_grad(), _patched_topk() as ranking:
+        reference = model(first)
+    top_q = ranking[0] if ranking else None
 
     attempts = [(config.compile, config.amp_dtype), (False, config.amp_dtype), (config.compile, None), (False, None)]
     errors: list[str] = []
     for compiled, amp_dtype in dict.fromkeys(attempts):  # in order, without repetitions
         torch._dynamo.reset()
-        run = model
-        if compiled:
-            run = torch.compile(
-                model,
-                mode=config.compile_mode,
-                backend=config.compile_backend,
-                fullgraph=config.fullgraph,
-                dynamic=False,
-            )
+        run = _compile(model, config) if compiled else model
         start = time.perf_counter()
         try:
             with _inference_context(device, amp_dtype):
@@ -329,6 +422,12 @@ def measure_latency(model: nn.Module, images: DataLoader, config: BenchmarkConfi
             _synchronize(device)
             times_ms.append((time.perf_counter() - start) * 1000)
 
+    # after the timing, and after reading the peak memory: this check compiles the model a second time
+    peak_memory_mib = torch.cuda.max_memory_allocated(device) / 2**20 if device.type == "cuda" else None
+    same_top_q = None
+    if top_q is not None:
+        same_top_q = _same_top_q_check(model, first, reference, top_q, config, compiled, amp_dtype)
+
     mean = statistics.fmean(times_ms)
     return {
         "latency_ms": {
@@ -340,14 +439,12 @@ def measure_latency(model: nn.Module, images: DataLoader, config: BenchmarkConfi
         "fps": 1000 / mean,
         "num_images": len(times_ms),
         "first_call_s": first_call_s,
-        "peak_memory_mib": torch.cuda.max_memory_allocated(device) / 2**20 if device.type == "cuda" else None,
+        "peak_memory_mib": peak_memory_mib,
         "compiled": compiled,
         "amp_dtype": amp_dtype,
         "fallback_errors": errors,
-        "max_abs_diff_from_eager_fp32": {
-            "scores": (logits.float().sigmoid() - reference_logits.sigmoid()).abs().max().item(),
-            "boxes": (boxes.float() - reference_boxes).abs().max().item(),
-        },
+        "max_abs_diff_from_eager_fp32": _max_abs_diff((boxes, logits), reference),
+        "same_top_q": same_top_q,
     }
 
 
@@ -410,22 +507,39 @@ def run_benchmark(
     }
 
 
+def _jobs(in_first: bool, in_second: bool) -> str:
+    """Name the jobs where a problem occurs; at least one of the two flags is true."""
+    return "both jobs" if in_first and in_second else f"job {1 if in_first else 2}"
+
+
 def compare_results(first: dict[str, Any], second: dict[str, Any]) -> list[str]:
-    """Check that two jobs measured the same model in the same way (step 13).
+    """Check that two jobs measured the same model as the protocol asks (step 13).
+
+    A model measured without compilation or in another precision has a record (§6), but its latency cannot be compared
+    with the others, even when the two jobs agree.
 
     Args:
         first: Record of the model in the first job.
         second: Record of the same model in the second job.
 
     Returns:
-        The differences that fail the check: parameters, MACs, compilation or precision differ, or the mean
-        latencies differ by more than :data:`MAX_LATENCY_DIFF`. Empty when the two jobs agree.
+        What fails the check: the model is not compiled or not in the precision of the protocol in a job, parameters
+        or MACs differ, or the mean latencies differ by more than :data:`MAX_LATENCY_DIFF`. Empty when all is right.
     """
     failures = [
-        f"{key} differs: {first[key]} vs {second[key]}"
-        for key in ("params", "macs", "compiled", "amp_dtype")
-        if first[key] != second[key]
+        f"{key} differs: {first[key]} vs {second[key]}" for key in ("params", "macs") if first[key] != second[key]
     ]
+    not_compiled = not first["compiled"], not second["compiled"]
+    if any(not_compiled):
+        failures.append(f"not compiled in {_jobs(*not_compiled)}")
+    wrong_precision = [record["amp_dtype"] != record["protocol"]["amp_dtype"] for record in (first, second)]
+    if any(wrong_precision):
+        wrong = first if wrong_precision[0] else second
+        failures.append(
+            f"amp_dtype {wrong['amp_dtype']} instead of {wrong['protocol']['amp_dtype']} in {_jobs(*wrong_precision)}"
+        )
+    elif first["amp_dtype"] != second["amp_dtype"]:  # two jobs with different protocols
+        failures.append(f"amp_dtype differs: {first['amp_dtype']} vs {second['amp_dtype']}")
     means = first["latency_ms"]["mean"], second["latency_ms"]["mean"]
     diff = max(means) / min(means) - 1
     if diff > MAX_LATENCY_DIFF:

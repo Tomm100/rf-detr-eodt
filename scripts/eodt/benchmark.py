@@ -14,8 +14,9 @@ step 13 (same parameters and MACs, mean latencies within 2%)::
 
     python scripts/eodt/benchmark.py compare <job 1> <job 2>
 
-It prints, for every model of the first job, latency, FPS, peak memory, parameters and MACs per component, and the
-verdict of the comparison; the exit code is 1 if a model fails or is missing from the second job.
+It prints, for every model of the first job, latency, FPS, peak memory, parameters, compilation and precision in the
+two jobs, MACs per component, and the verdict of the comparison; the exit code is 1 if a model fails or is missing from
+the second job. A model not compiled, or not in the precision of the protocol, fails even when the two jobs agree.
 """
 
 from __future__ import annotations
@@ -27,6 +28,9 @@ from pathlib import Path
 from typing import Any
 
 from rfdetr.models.eodt.benchmark import MACS_NOTE, PUBLISHED, compare_results, load_benchmark_config, run_benchmark
+
+COMPILED = {True: "yes", False: "no"}
+PRECISION = {"bf16": "bf16", None: "fp32"}
 
 
 def run(args: argparse.Namespace) -> None:
@@ -45,11 +49,18 @@ def run(args: argparse.Namespace) -> None:
         f", {record['fps']:.1f} FPS, compiled {record['compiled']}, amp {record['amp_dtype']}, "
         f"{record['macs']['total'] / 1e9:.2f} GMAC, {record['params'] / 1e6:.2f} M parameters -> {args.output}"
     )
+    print(f"  max_abs_diff_from_eager_fp32: {json.dumps(record['max_abs_diff_from_eager_fp32'])}")
+    print(f"  same_top_q: {json.dumps(record['same_top_q'])}")
 
 
 def _read_job(folder: Path) -> dict[str, dict[str, Any]]:
     """Records of a job folder, by model name."""
     return {path.stem: json.loads(path.read_text(encoding="utf-8")) for path in sorted(folder.glob("*.json"))}
+
+
+def _per_job(record: dict[str, Any], other: dict[str, Any] | None, key: str, names: dict[Any, str]) -> str:
+    """Value of ``key`` in the two jobs, as ``first/second``, with ``-`` for a model missing from the second."""
+    return f"{names[record[key]]}/{names[other[key]] if other else '-'}"
 
 
 def compare(args: argparse.Namespace) -> int:
@@ -58,7 +69,10 @@ def compare(args: argparse.Namespace) -> int:
     if not first:
         raise SystemExit(f"no JSON record in {args.first}")
     failed = False
-    print(f"{'model':<34} {'ms (1)':>8} {'ms (2)':>8} {'diff':>6} {'FPS':>7} {'MiB':>7} {'M par':>6} {'GMAC':>6}  verdict")
+    print(
+        f"{'model':<34} {'ms (1)':>8} {'ms (2)':>8} {'diff':>6} {'FPS':>7} {'MiB':>7} {'M par':>6} {'GMAC':>6} "
+        f"{'compiled':>8} {'amp':>9}  verdict"
+    )
     for name, record in first.items():
         other = second.get(name)
         failures = compare_results(record, other) if other else [f"missing from {args.second}"]
@@ -68,7 +82,8 @@ def compare(args: argparse.Namespace) -> int:
         memory = record["peak_memory_mib"]
         print(
             f"{name:<34} {mean:8.3f} {mean_2:>15} {record['fps']:7.1f} {memory or float('nan'):7.0f} "
-            f"{record['params'] / 1e6:6.2f} {record['macs']['total'] / 1e9:6.2f}  "
+            f"{record['params'] / 1e6:6.2f} {record['macs']['total'] / 1e9:6.2f} "
+            f"{_per_job(record, other, 'compiled', COMPILED):>8} {_per_job(record, other, 'amp_dtype', PRECISION):>9}  "
             + ("PASS" if not failures else "FAIL: " + "; ".join(failures))
         )
     print("\nGMAC per component (first job)")
