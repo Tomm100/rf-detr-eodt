@@ -10,12 +10,11 @@ whole models, with the settings of a YAML file of ``configs/benchmark/``, in bf1
 traceback of every failure. A case that fails in bf16 is tried again without Inductor's index propagation and without
 its unrolled reductions, to see whether the failure goes through them: a diagnosis, not a fix.
 
-The first job showed that ``gen_encoder_output_proposals`` fails alone. The cases named ``<case>_<rewrite>`` run the six
-cases that contain it with a rewrite of that function, on the real models and without changing their files, to find
-out which rewrite compiles. On a GPU node, from the code folder::
+The cause was ``gen_encoder_output_proposals``, rewritten since then (EODT_SPEC.md §8, point 10): every case must now
+compile. On a GPU node, from the code folder::
 
     python scripts/leonardo/diagnose_compile.py configs/benchmark/a100.yaml
-    python scripts/leonardo/diagnose_compile.py configs/benchmark/a100.yaml --cases first_stage first_stage_stack_xywh
+    python scripts/leonardo/diagnose_compile.py configs/benchmark/a100.yaml --cases first_stage reparam_select
 
 Every attempt prints its outcome and its time (compilation and first call) as soon as it ends, so that a job stopped
 by its time limit keeps the results obtained so far; the table at the end summarizes them.
@@ -31,9 +30,8 @@ import argparse
 import json
 import time
 import traceback
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
-from functools import cache, partial
+from collections.abc import Callable, Mapping
+from functools import cache
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -42,8 +40,6 @@ import torch
 from torch import Tensor, nn
 from torch._inductor import config as inductor_config
 
-import rfdetr.models.eodt.selection as query_selection
-import rfdetr.models.transformer as rfdetr_transformer
 from rfdetr.models.eodt.benchmark import (
     BenchmarkConfig,
     _compile,
@@ -53,7 +49,7 @@ from rfdetr.models.eodt.benchmark import (
     load_benchmark_config,
 )
 from rfdetr.models.eodt.selection import reparam_boxes
-from rfdetr.models.transformer import gen_sineembed_for_position
+from rfdetr.models.transformer import gen_encoder_output_proposals, gen_sineembed_for_position
 
 ROOT = Path(__file__).resolve().parents[2]
 EODT_SELECTION = ROOT / "configs" / "eodt" / "eodt_vits_576_l2-3_selection.yaml"
@@ -88,120 +84,7 @@ class Run(NamedTuple):
         return torch.randn(*shape, device=self.device, dtype=dtype)
 
 
-class Case(NamedTuple):
-    """What a case compiles, given as a function of the run, and the rewrite of the proposals it runs with, if any."""
-
-    build: Callable[[Run], tuple[Callable[..., Any], tuple[Any, ...]]]
-    rewrite: Callable[..., tuple[Tensor, Tensor]] | None = None
-
-
-def _is_valid(boxes: Tensor) -> Tensor:
-    """Whether all the coordinates of a proposal are in (0.01, 0.99), as ``gen_encoder_output_proposals`` checks."""
-    return ((boxes > 0.01) & (boxes < 0.99)).all(-1, keepdim=True)
-
-
-def rewritten_proposals(
-    memory: Tensor,
-    memory_padding_mask: Tensor | None = None,
-    spatial_shapes: Sequence[tuple[int, int]] | Tensor | None = None,
-    unsigmoid: bool = True,
-    *,
-    skip_single_cat: bool = False,
-    stack_xywh: bool = False,
-    valid_before_cat: bool = False,
-) -> tuple[Tensor, Tensor]:
-    """``gen_encoder_output_proposals`` of ``models/transformer.py`` with a rewrite, to find one that Inductor compiles.
-
-    Signature and branches for the padding mask and ``unsigmoid`` are the original ones, and the outputs in eager mode
-    are identical bit by bit (checked by ``tests/eodt/test_benchmark.py``).
-
-    Args:
-        memory: As in the original.
-        memory_padding_mask: As in the original.
-        spatial_shapes: As in the original.
-        unsigmoid: As in the original.
-        skip_single_cat: Skip the final ``cat`` when there is only one level.
-        stack_xywh: Build each level with one ``stack`` of cx, cy, w, h: no ``cat`` inside another.
-        valid_before_cat: Keep every ``cat``, but compute the validity before the outer one, so that the reduction over
-            the four coordinates does not read through it.
-
-    Returns:
-        As in the original: the memory and the proposals, with the invalid proposals zeroed or set to infinity.
-    """
-    proposals = []
-    valid_parts = []
-    _cur = 0
-    batch_size, _, _ = memory.shape
-    assert spatial_shapes is not None
-    for lvl, (height, width) in enumerate(spatial_shapes):
-        if memory_padding_mask is not None:
-            mask_flatten_ = memory_padding_mask[:, _cur : (_cur + height * width)].reshape(batch_size, height, width, 1)
-
-            valid_height = torch.sum(~mask_flatten_[:, :, 0, 0], 1)
-            valid_width = torch.sum(~mask_flatten_[:, 0, :, 0], 1)
-        else:
-            valid_height = torch.zeros_like(memory[:, 0, 0], dtype=torch.long) + height
-            valid_width = torch.zeros_like(memory[:, 0, 0], dtype=torch.long) + width
-
-        grid_y, grid_x = torch.meshgrid(
-            torch.linspace(0, height - 1, height, dtype=torch.float32, device=memory.device),
-            torch.linspace(0, width - 1, width, dtype=torch.float32, device=memory.device),
-            indexing="ij",
-        )
-        if stack_xywh:
-            center_x = (grid_x.unsqueeze(0) + 0.5) / valid_width.float().reshape(-1, 1, 1)
-            center_y = (grid_y.unsqueeze(0) + 0.5) / valid_height.float().reshape(-1, 1, 1)
-            size = torch.ones_like(center_x) * 0.05 * (2.0**lvl)
-            proposal = torch.stack([center_x, center_y, size, size], -1).reshape(batch_size, -1, 4)
-        else:
-            grid = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1)], -1)  # height, width, 2
-            scale = torch.cat([valid_width.unsqueeze(-1), valid_height.unsqueeze(-1)], 1).reshape(-1, 1, 1, 2)
-            proposals_grid = (grid.unsqueeze(0) + 0.5) / scale.float()
-            wh = torch.ones_like(proposals_grid) * 0.05 * (2.0**lvl)
-            proposal = torch.cat((proposals_grid, wh), -1).reshape(batch_size, -1, 4)
-            if valid_before_cat:
-                valid_parts.append((_is_valid(proposals_grid) & _is_valid(wh)).reshape(batch_size, -1, 1))
-        proposals.append(proposal)
-        _cur += height * width
-
-    output_proposals = proposals[0] if skip_single_cat and len(proposals) == 1 else torch.cat(proposals, 1)
-    output_proposals_valid = torch.cat(valid_parts, 1) if valid_before_cat else _is_valid(output_proposals)
-
-    if unsigmoid:
-        output_proposals = torch.log(output_proposals / (1 - output_proposals))
-        if memory_padding_mask is not None:
-            output_proposals = output_proposals.masked_fill(memory_padding_mask.unsqueeze(-1), float("inf"))
-        output_proposals = output_proposals.masked_fill(~output_proposals_valid, float("inf"))
-    else:
-        if memory_padding_mask is not None:
-            output_proposals = output_proposals.masked_fill(memory_padding_mask.unsqueeze(-1), float(0))
-        output_proposals = output_proposals.masked_fill(~output_proposals_valid, float(0))
-
-    output_memory = memory
-    if memory_padding_mask is not None:
-        output_memory = output_memory.masked_fill(memory_padding_mask.unsqueeze(-1), float(0))
-    output_memory = output_memory.masked_fill(~output_proposals_valid, float(0))
-
-    return output_memory.to(memory.dtype), output_proposals.to(memory.dtype)
-
-
-REWRITES = {
-    "no_single_cat": partial(rewritten_proposals, skip_single_cat=True),
-    "stack_xywh": partial(rewritten_proposals, stack_xywh=True),
-    "valid_before_cat": partial(rewritten_proposals, valid_before_cat=True),
-}
-
-
-@contextmanager
-def _using_rewrite(rewrite: Callable[..., tuple[Tensor, Tensor]] | None) -> Iterator[None]:
-    """Inside the context RF-DETR and EoDT call ``rewrite``, if given, instead of ``gen_encoder_output_proposals``."""
-    original = rfdetr_transformer.gen_encoder_output_proposals
-    if rewrite is not None:
-        rfdetr_transformer.gen_encoder_output_proposals = query_selection.gen_encoder_output_proposals = rewrite
-    try:
-        yield
-    finally:
-        rfdetr_transformer.gen_encoder_output_proposals = query_selection.gen_encoder_output_proposals = original
+Case = Callable[[Run], tuple[Callable[..., Any], tuple[Any, ...]]]  # gives the function to compile and its inputs
 
 
 @cache
@@ -228,9 +111,9 @@ def first_stage(run: Run) -> tuple[Callable[..., Any], tuple[Any, ...]]:
 
 
 def proposals(run: Run) -> tuple[Callable[..., Any], tuple[Any, ...]]:
-    """``gen_encoder_output_proposals``: ``linspace``, ``meshgrid`` and the ``cat`` of the grid and of the boxes."""
+    """``gen_encoder_output_proposals``: ``linspace``, ``meshgrid``, the ``stack`` of the boxes and their validity."""
     return (
-        lambda memory: rfdetr_transformer.gen_encoder_output_proposals(memory, None, [GRID], unsigmoid=False),
+        lambda memory: gen_encoder_output_proposals(memory, None, [GRID], unsigmoid=False),
         (run.randn(1, PATCHES, WIDTH),),
     )
 
@@ -311,32 +194,19 @@ def baseline_medium_win(run: Run) -> tuple[Callable[..., Any], tuple[Any, ...]]:
 
 
 CASES: dict[str, Case] = {
-    "first_stage": Case(first_stage),
-    "proposals": Case(proposals),
-    "topk_gather": Case(topk_gather),
-    "reparam": Case(reparam),
-    "reparam_select": Case(reparam_select),
-    "reparam_chain": Case(reparam_chain),
-    "reparam_chain_select": Case(reparam_chain_select),
-    "sine_embedding": Case(sine_embedding),
-    "eodt_queries": Case(eodt_queries),
-    "eodt_selection": Case(eodt_selection),
-    "eodt_learned": Case(eodt_learned),
-    "baseline_transformer": Case(baseline_transformer),
-    "baseline_medium_win": Case(baseline_medium_win),
-}
-# Every rewrite on the six cases that contain gen_encoder_output_proposals: a rewrite that compiles alone is not enough
-CASES |= {
-    f"{base}_{name}": Case(CASES[base].build, rewrite)
-    for base in (
-        "proposals",
-        "first_stage",
-        "eodt_queries",
-        "eodt_selection",
-        "baseline_transformer",
-        "baseline_medium_win",
-    )
-    for name, rewrite in REWRITES.items()
+    "first_stage": first_stage,
+    "proposals": proposals,
+    "topk_gather": topk_gather,
+    "reparam": reparam,
+    "reparam_select": reparam_select,
+    "reparam_chain": reparam_chain,
+    "reparam_chain_select": reparam_chain_select,
+    "sine_embedding": sine_embedding,
+    "eodt_queries": eodt_queries,
+    "eodt_selection": eodt_selection,
+    "eodt_learned": eodt_learned,
+    "baseline_transformer": baseline_transformer,
+    "baseline_medium_win": baseline_medium_win,
 }
 
 
@@ -354,16 +224,12 @@ def attempt(
     Returns:
         The time of the compilation and of the first call in seconds, and the error in one line (``None`` if it works).
     """
-    function, inputs = case.build(run)
+    function, inputs = case(run)
     torch._dynamo.reset()
     error = None
     start = time.perf_counter()
     try:
-        with (
-            _using_rewrite(case.rewrite),
-            inductor_config.patch(**(inductor_settings or {})),
-            _inference_context(run.device, run.amp_dtype),
-        ):
+        with inductor_config.patch(**(inductor_settings or {})), _inference_context(run.device, run.amp_dtype):
             _compile(function, config)(*inputs)
     except Exception as exception:  # noqa: BLE001 - a failure is the result of the attempt
         print(traceback.format_exc())
@@ -399,12 +265,12 @@ def run_cases(cases: Mapping[str, Case], config: BenchmarkConfig) -> dict[str, d
 def print_summary(results: Mapping[str, Mapping[str, tuple[float, str | None]]]) -> None:
     """Print one row per case with the outcome and time of each attempt, then the errors."""
     labels = [label for label, _, _ in ATTEMPTS]
-    print("\nSummary\n" + f"{'case':<40}" + "".join(f"{label:<30}" for label in labels))
+    print("\nSummary\n" + f"{'case':<22}" + "".join(f"{label:<30}" for label in labels))
     for name, row in results.items():
         cells = (
             f"{'FAIL' if row[label][1] else 'ok'} {row[label][0]:.1f} s" if label in row else "-" for label in labels
         )
-        print(f"{name:<40}" + "".join(f"{cell:<30}" for cell in cells))
+        print(f"{name:<22}" + "".join(f"{cell:<30}" for cell in cells))
     print("\nErrors")
     for name, row in results.items():
         for label, (_, error) in row.items():

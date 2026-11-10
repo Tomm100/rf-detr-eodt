@@ -113,14 +113,14 @@ def gen_encoder_output_proposals(
             torch.linspace(0, width - 1, width, dtype=torch.float32, device=memory.device),
             indexing="ij",
         )
-        grid = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1)], -1)  # height, width, 2
 
+        # EoDT fork: one stack instead of a cat that reads other cats. torch.compile with Inductor unrolls the .all(-1)
+        # below with constant indices along that dimension and fails on nested cats (EODT_SPEC.md §8, point 10).
         # Keep symbolic batch in ONNX.
-        scale = torch.cat([valid_width.unsqueeze(-1), valid_height.unsqueeze(-1)], 1).reshape(-1, 1, 1, 2)
-        proposals_grid = (grid.unsqueeze(0) + 0.5) / scale.float()
-
-        wh = torch.ones_like(proposals_grid) * 0.05 * (2.0**lvl)
-        proposal = torch.cat((proposals_grid, wh), -1).reshape(batch_size, -1, 4)
+        center_x = (grid_x.unsqueeze(0) + 0.5) / valid_width.float().reshape(-1, 1, 1)
+        center_y = (grid_y.unsqueeze(0) + 0.5) / valid_height.float().reshape(-1, 1, 1)
+        size = torch.ones_like(center_x) * 0.05 * (2.0**lvl)
+        proposal = torch.stack([center_x, center_y, size, size], -1).reshape(batch_size, -1, 4)
         proposals.append(proposal)
         _cur += height * width
 

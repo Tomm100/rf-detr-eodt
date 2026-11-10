@@ -167,23 +167,30 @@ def test_prepare_offline_caches_dinov2() -> None:
 def test_benchmark_job() -> None:
     """benchmark.sh measures every model of §6 with the A100 protocol, on a reserved node.
 
-    EoDT and the three rings of the baseline from their YAML files, and every published checkpoint of RF-DETR,
-    whose weights prepare_offline.sh downloads into RF_HOME with their MD5.
+    EoDT and the three rings of the baseline from their YAML files, every published checkpoint of RF-DETR, whose
+    weights prepare_offline.sh downloads into RF_HOME with their MD5, and the models without trained weights: EoDT on
+    ViT-B and ViT-L and the architectures of RF-DETR's Table 7.
     """
     script = (ROOT / "scripts" / "leonardo" / "benchmark.sh").read_text(encoding="utf-8")
     models = re.search(r'MODELS="\n(?P<paths>.*?)\n"', script, flags=re.DOTALL)
     published = re.search(r'PUBLISHED="(?P<names>[^"]*)"', script)
+    untrained = re.search(r'UNTRAINED="\n(?P<paths>.*?)\n"', script, flags=re.DOTALL)
     prepare = (ROOT / "scripts" / "leonardo" / "prepare_offline.sh").read_text(encoding="utf-8")
 
     assert "#SBATCH --exclusive" in script
     assert "PROTOCOL=configs/benchmark/a100.yaml" in script
-    assert models is not None and published is not None
+    assert models is not None and published is not None and untrained is not None
     paths = models["paths"].split()
     assert {Path(path).parent.name for path in paths} == {"eodt", "baseline"}
     assert {Path(path).name for path in paths if "baseline" in path} == {
         f"baseline_medium_{ring}.yaml" for ring in ("win", "nowin", "nowin_noproj")
     }
-    for path in paths:
+    assert {Path(path).name for path in untrained["paths"].split()} == {
+        "eodt_vitb_576_l2-3_selection.yaml",
+        "eodt_vitl_576_l2-4_selection.yaml",
+        *(f"rfdetr_table7_{size}.yaml" for size in ("xl", "2xl", "max")),
+    }
+    for path in paths + untrained["paths"].split():
         load_configs(ROOT / path)
     assert published["names"].split() == list(PUBLISHED)
     assert "for name in PUBLISHED:" in prepare and ".md5_hash" in prepare

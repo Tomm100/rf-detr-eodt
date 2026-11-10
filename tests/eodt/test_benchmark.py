@@ -15,9 +15,11 @@ Covers:
   ``compare`` command apply the 2% criterion and fail a model not compiled or not in the precision of the protocol.
 - A run on coco_mini writes a complete record, and a model that does not compile is measured without compiling.
 - ``torch.topk`` can be imposed, also on a compiled model: the check of the compiled model with the same top-Q.
-- ``scripts/leonardo/diagnose_compile.py`` runs its cases and reports a failure without stopping, and its rewrites of
-  ``gen_encoder_output_proposals`` give the bits of the original and reach the real models. Windows has no triton, so
-  only the graph capture is tested here: what Inductor does is seen only on Leonardo.
+- ``scripts/leonardo/diagnose_compile.py`` runs its cases and reports a failure without stopping. Windows has no triton,
+  so only the graph capture is tested here: what Inductor does is seen only on Leonardo.
+- The architectures XL, 2XL and Max of RF-DETR's Table 7 hold the values of the table and give the parameters and the
+  GFLOPs of the paper (Appendix E), from which their decoder was inferred; the same numbers on the Medium calibrate
+  the comparison.
 """
 
 import importlib.util
@@ -52,7 +54,6 @@ from rfdetr.models.eodt.benchmark import (
     run_benchmark,
 )
 from rfdetr.models.lwdetr import build_model_from_config
-from rfdetr.models.transformer import gen_encoder_output_proposals
 from rfdetr.models.weights import load_pretrain_weights
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -71,25 +72,35 @@ MODEL_YAMLS = {
     "baseline_nowin": CONFIGS / "baseline" / "baseline_medium_nowin.yaml",
     "baseline_nowin_noproj": CONFIGS / "baseline" / "baseline_medium_nowin_noproj.yaml",
 }
-_REWRITES = ("no_single_cat", "stack_xywh", "valid_before_cat")
-_CASES_WITH_PROPOSALS = (
-    "proposals",
-    "first_stage",
-    "eodt_queries",
-    "eodt_selection",
-    "baseline_transformer",
-    "baseline_medium_win",
-)
+# The models of the benchmark without trained weights (EODT_SPEC.md §6): slow on the CPU
+UNTRAINED_YAMLS = {
+    "eodt_vitb": CONFIGS / "eodt" / "eodt_vitb_576_l2-3_selection.yaml",
+    "eodt_vitl": CONFIGS / "eodt" / "eodt_vitl_576_l2-4_selection.yaml",
+    "rfdetr_table7_xl": CONFIGS / "baseline" / "rfdetr_table7_xl.yaml",
+    "rfdetr_table7_2xl": CONFIGS / "baseline" / "rfdetr_table7_2xl.yaml",
+    "rfdetr_table7_max": CONFIGS / "baseline" / "rfdetr_table7_max.yaml",
+}
+# Table 7 of RF-DETR (resolution, patch, windows, decoder layers) and the parameters (M, with 13 groups) and GFLOPs of
+# Appendix E, from which the decoder that the table does not give was inferred (EODT_SPEC.md §6)
+TABLE_7 = {
+    "xl": (700, 20, 1, 5, 126.4, 299.3),
+    "2xl": (880, 20, 2, 5, 126.9, 438.4),
+    "max": (828, 12, 1, 6, 132.4, 1742.5),
+}
 _CASE_NAMES = (
-    *_CASES_WITH_PROPOSALS,
+    "first_stage",
+    "proposals",
     "topk_gather",
     "reparam",
     "reparam_select",
     "reparam_chain",
     "reparam_chain_select",
     "sine_embedding",
+    "eodt_queries",
+    "eodt_selection",
     "eodt_learned",
-    *(f"{case}_{rewrite}" for case in _CASES_WITH_PROPOSALS for rewrite in _REWRITES),
+    "baseline_transformer",
+    "baseline_medium_win",
 )
 EODT_COMPONENTS = {"vit_l1", "vit_l2", "first_stage", "heads"}
 LWDETR_COMPONENTS = {"vit", "projector", "first_stage", "decoder", "heads"}
@@ -123,13 +134,15 @@ def test_eodt_forward_export_matches_forward(query_mode: str) -> None:
     torch.testing.assert_close(logits, out["pred_logits"])
 
 
-@pytest.mark.parametrize("name", list(MODEL_YAMLS))
+@pytest.mark.parametrize(
+    "name", [*MODEL_YAMLS, *(pytest.param(name, marks=pytest.mark.gpu) for name in UNTRAINED_YAMLS)]
+)
 def test_inference_model(name: str) -> None:
     """The benchmarked model computes the eval forward, also when compiled, and its MACs per component add up.
 
     Built twice with the same seed: as for training (eval forward) and for the benchmark (``export()``).
     """
-    path = MODEL_YAMLS[name]
+    path = {**MODEL_YAMLS, **UNTRAINED_YAMLS}[name]
     torch.manual_seed(0)
     model, model_config = build_inference_model(model_yaml=path)
     torch.manual_seed(0)
@@ -182,6 +195,85 @@ def test_published_one_group_matches_thirteen() -> None:
     assert torch.equal(compiled_boxes, boxes)
     assert torch.equal(compiled_logits, logits)
     assert count_params(model) < count_params(full)
+
+
+def _init_args(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Read the ``init_args`` of the model and of the training configuration of a YAML file as plain data."""
+    content = yaml.safe_load(path.read_text(encoding="utf-8"))["model"]
+    return content["model_config"]["init_args"], content["train_config"]["init_args"]
+
+
+def _changed(base: dict[str, Any], derived: dict[str, Any]) -> dict[str, Any]:
+    """The keys of ``derived`` whose value differs from ``base``; both hold the same keys."""
+    assert set(derived) == set(base)
+    return {key: value for key, value in derived.items() if base[key] != value}
+
+
+def _own_run(path: Path) -> dict[str, Any]:
+    """The training keys that only name the run of a file: its output_dir and W&B run."""
+    return {"output_dir": f"/leonardo_work/IscrC_EoDT/tcentonz/runs/{path.stem}", "run": path.stem}
+
+
+@pytest.mark.parametrize(
+    ("name", "changes"),
+    [
+        ("eodt_vitb", {"backbone_name": "vit_base_patch14_reg4_dinov2"}),
+        ("eodt_vitl", {"backbone_name": "vit_large_patch14_reg4_dinov2", "num_l2_blocks": 4}),
+    ],
+)
+def test_eodt_on_larger_vit(name: str, changes: dict[str, Any]) -> None:
+    """EoDT on ViT-B (L2 = 3) and ViT-L (L2 = 4) is the ViT-S selection YAML with only the backbone and L2 changed."""
+    path = UNTRAINED_YAMLS[name]
+    base_model, base_train = _init_args(MODEL_YAMLS["eodt_selection"])
+    model, train = _init_args(path)
+
+    assert _changed(base_model, model) == changes
+    assert _changed(base_train, train) == _own_run(path)
+    load_configs(path)
+
+
+@pytest.mark.parametrize("size", list(TABLE_7))
+def test_table7_architecture(size: str) -> None:
+    """XL, 2XL and Max hold the values of Table 7 and, with 13 groups, the parameters of the paper to the printed digit.
+
+    The training configuration is the one of the baseline, with only its own output_dir and run.
+    """
+    path = UNTRAINED_YAMLS[f"rfdetr_table7_{size}"]
+    resolution, patch, windows, layers, params, _ = TABLE_7[size]
+    model_config = load_configs(path)[0]
+    with_groups = model_config.model_copy(update={"group_detr": 13})  # how the paper counts them, as for the Medium
+
+    assert (model_config.resolution, model_config.patch_size, model_config.num_windows) == (resolution, patch, windows)
+    assert (model_config.dec_layers, model_config.num_queries) == (layers, 300)
+    assert model_config.encoder == "dinov2_windowed_base"
+    assert model_config.positional_encoding_size == resolution // patch
+    assert model_config.group_detr == 1 and model_config.pretrain_weights is None
+    assert round(count_params(build_model_from_config(with_groups)) / 1e6, 1) == params
+    assert _changed(_init_args(MODEL_YAMLS["baseline_win"])[1], _init_args(path)[1]) == _own_run(path)
+
+
+def test_paper_numbers_of_the_medium() -> None:
+    """The calibration of the comparison: the paper's Medium has 33.7 M parameters with 13 groups and 78.8 GFLOPs.
+
+    The GFLOPs are 2 x the MACs counted here, with one group, about 0.7% fewer than the paper's.
+    """
+    medium = build_model_from_config(RFDETRMediumConfig(pretrain_weights=None))
+    one_group = build_model_from_config(RFDETRMediumConfig(pretrain_weights=None, group_detr=1)).eval()
+    one_group.export()
+    one_group.requires_grad_(False)
+
+    assert round(count_params(medium) / 1e6, 1) == 33.7
+    assert 2 * count_macs(one_group, 576)["total"] / 1e9 == pytest.approx(78.8, rel=0.01)
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("size", list(TABLE_7))
+def test_table7_gflops(size: str) -> None:
+    """XL, 2XL and Max: 2 x the MACs are the GFLOPs of the paper within 1%, as for the Medium."""
+    resolution, *_, gflops = TABLE_7[size]
+    model, _ = build_inference_model(model_yaml=UNTRAINED_YAMLS[f"rfdetr_table7_{size}"])
+
+    assert 2 * count_macs(model, resolution)["total"] / 1e9 == pytest.approx(gflops, rel=0.01)
 
 
 def test_published_configs() -> None:
@@ -536,14 +628,14 @@ def test_diagnosis_runs_every_case(tmp_path: Path) -> None:
 def test_diagnosis_reports_a_failure_and_continues(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: Any
 ) -> None:
-    """A case that fails prints its traceback, is retried without index propagation, and does not stop the others."""
+    """A failing case prints its traceback, is retried with other settings of Inductor, and does not stop the rest."""
     diagnose = _diagnose_script(monkeypatch)
     config = load_benchmark_config(_capture_only_protocol(tmp_path))
 
     def broken(run: Any) -> tuple[nn.Module, tuple[Tensor]]:
         return _GraphBreak(), (run.randn(1, 3, 4, 4),)
 
-    results = diagnose.run_cases({"broken": diagnose.Case(broken), "reparam": diagnose.CASES["reparam"]}, config)
+    results = diagnose.run_cases({"broken": broken, "reparam": diagnose.reparam}, config)
     diagnose.print_summary(results)
     out = capsys.readouterr().out
 
@@ -554,68 +646,3 @@ def test_diagnosis_reports_a_failure_and_continues(
     assert "--- broken | bf16: FAIL in" in out and "--- reparam | bf16: ok in" in out
     assert "broken | fp32: Unsupported" in out[out.index("\nErrors\n") :]
 
-
-def _same_bits(first: Tensor, second: Tensor) -> bool:
-    """Whether two tensors have the same type, shape and bytes: ``torch.equal`` does not tell 0.0 from -0.0."""
-    return (
-        first.dtype == second.dtype
-        and first.shape == second.shape
-        and first.float().cpu().numpy().tobytes() == second.float().cpu().numpy().tobytes()
-    )
-
-
-def _padding_mask(shapes: list[tuple[int, int]], batch: int, device: str) -> Tensor:
-    """Return a padding mask with images of different sizes and, with more images, one that is all padding."""
-    levels = []
-    for height, width in shapes:
-        level = torch.zeros(batch, height, width, dtype=torch.bool, device=device)
-        level[0, -1:, :] = True
-        level[0, :, -1:] = True
-        if batch > 1:
-            level[-1] = True  # no valid row or column: a division by zero, then overwritten
-        levels.append(level.flatten(1))
-    return torch.cat(levels, 1)
-
-
-@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.gpu)])
-@pytest.mark.parametrize("rewrite", _REWRITES)
-def test_rewritten_proposals_are_identical_bit_by_bit(
-    monkeypatch: pytest.MonkeyPatch, rewrite: str, device: str
-) -> None:
-    """In eager mode every rewrite gives the bits of the original: padding mask, unsigmoid, levels, batch, precision."""
-    function = _diagnose_script(monkeypatch).REWRITES[rewrite]
-    generator = torch.Generator().manual_seed(0)
-    assert not _same_bits(torch.tensor([0.0]), torch.tensor([-0.0]))  # the comparison sees the sign of a zero
-
-    for shapes in ([(4, 6)], [(4, 6), (2, 3)]):
-        for batch in (1, 3):
-            size = sum(height * width for height, width in shapes)
-            noise = torch.randn(batch, size, 8, generator=generator).to(device)
-            for dtype in (torch.float32, torch.bfloat16):
-                memory = noise.to(dtype)
-                for mask in (None, _padding_mask(shapes, batch, device)):
-                    for unsigmoid in (True, False):
-                        original = gen_encoder_output_proposals(memory, mask, shapes, unsigmoid=unsigmoid)
-                        rewritten = function(memory, mask, shapes, unsigmoid=unsigmoid)
-                        where = (shapes, batch, dtype, mask is None, unsigmoid)
-                        assert _same_bits(rewritten[0], original[0]), where
-                        assert _same_bits(rewritten[1], original[1]), where
-
-
-@pytest.mark.parametrize("case", ["first_stage", "baseline_transformer"])
-def test_rewrite_reaches_the_real_models(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str) -> None:
-    """During an attempt the model calls the rewrite, also when compiled, and afterwards the original is back."""
-    diagnose = _diagnose_script(monkeypatch)
-    config = load_benchmark_config(_capture_only_protocol(tmp_path))
-    calls: list[int] = []
-
-    def counting(*args: Any, **kwargs: Any) -> tuple[Tensor, Tensor]:
-        calls.append(1)
-        return gen_encoder_output_proposals(*args, **kwargs)
-
-    run = diagnose.Run(torch.device("cpu"), None)
-    _, error = diagnose.attempt(diagnose.Case(diagnose.CASES[case].build, counting), run, config)
-
-    assert error is None and calls
-    assert diagnose.rfdetr_transformer.gen_encoder_output_proposals is gen_encoder_output_proposals
-    assert diagnose.query_selection.gen_encoder_output_proposals is gen_encoder_output_proposals

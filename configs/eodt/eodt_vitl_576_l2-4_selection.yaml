@@ -1,0 +1,63 @@
+# EoDT ViT-L, 576 px, L2 = 4, selection queries (EODT_SPEC.md §3.6): for the latency benchmark (§6),
+# without trained weights (DINOv2 pretrained, queries and head at their initialization). Copy of
+# eodt_vits_576_l2-3_selection.yaml with only backbone_name, num_l2_blocks, output_dir and run changed (checked by
+# tests/eodt/test_benchmark.py); the recipe is the one of ViT-S, to be reviewed before a training (§9, step 11).
+# Read by rfdetr.models.eodt.load_configs, not by `rfdetr fit` (§3.7).
+#
+# Written as the configurations hold them: "off" between quotes (bare off is the boolean false) and floats
+# with a dot (pyyaml reads 1e-4 as a string). TrainConfig would convert both, but the tests compare file and
+# configuration value by value.
+
+model:
+  model_config:
+    class_path: rfdetr.models.eodt.EoDTConfig
+    init_args:
+      backbone_name: vit_large_patch14_reg4_dinov2  # §3.1: DINOv2 with 4 registers
+      resolution: 576  # §3.1
+      patch_size: 16
+      num_l2_blocks: 4  # §3.2, no default in the code
+      num_queries: 300  # §3.3
+      query_mode: selection  # §3.3, the main model
+      group_detr: 1  # §4, alternative (a)
+      num_classes: 90  # COCO: 91 logits
+  train_config:
+    class_path: rfdetr.config.TrainConfig
+    init_args:
+      dataset_file: coco
+      dataset_dir: /leonardo_scratch/fast/IscrC_EoDT/coco
+      output_dir: /leonardo_work/IscrC_EoDT/tcentonz/runs/eodt_vitl_576_l2-4_selection
+      # input and augmentation (§7.0)
+      multi_scale: "off"
+      square_resize_div_64: true
+      augmentation_backend: torchvision
+      # optimization (§7.1)
+      lr: 1.0e-4
+      lr_encoder: 1.5e-4
+      lr_vit_layer_decay: 0.8
+      lr_component_decay: 0.7
+      weight_decay: 1.0e-4
+      clip_max_norm: 0.1
+      lr_scheduler: cosine
+      warmup_epochs: 1
+      epochs: 12
+      batch_size: 4  # per GPU
+      grad_accum_steps: 1
+      cls_loss_coef: 1.0
+      use_ema: true
+      ema_decay: 0.993
+      amp_dtype: bf16
+      seed: 0
+      # evaluation (§6): COCO maxDets, applied per image and class; PostProcess keeps num_select = 300
+      # detections per image. The same for EoDT and baseline
+      eval_max_dets: 100
+      # logging (§7.3): W&B offline on the compute nodes, synced from the login node. scripts/leonardo/train.sh
+      # sets WANDB_RUN_ID to the name of this file, so that the jobs of a resumed run continue the same W&B run
+      wandb: true
+      project: eodt
+      run: eodt_vitl_576_l2-4_selection
+      tensorboard: false  # W&B and metrics.csv already hold the curves
+      # hardware (Leonardo)
+      devices: 4
+      num_nodes: 1
+      strategy: ddp
+      num_workers: 7  # per GPU: one core per GPU left to the main process

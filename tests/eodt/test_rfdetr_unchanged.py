@@ -11,6 +11,9 @@ path next to the fix of ``dinov2.py`` in step 8a):
 - ``build_model_from_config`` with an RF-DETR config: same state dict and same output on a fixed image.
 - ``build_criterion_from_config``: same loss weights and same losses on fixed targets.
 - ``get_param_dict``: same optimizer groups (learning rate, weight decay and parameters of each group).
+- ``gen_encoder_output_proposals``, rewritten in the fork for ``torch.compile`` (EODT_SPEC.md §8, point 10): the same
+  bits with and without padding mask, ``unsigmoid`` true and false, one and two levels, batch 1 and 3, fp32 and bf16,
+  on the CPU and, if there is one, on the GPU.
 """
 
 import os
@@ -95,6 +98,8 @@ def test_rfdetr_unchanged(config_name: str, dec_layers: int, tmp_path: Path) -> 
     _assert_identical(fork["loss_dict"], reference["loss_dict"], "loss_dict")
     assert len(fork["param_groups"]) > 1
     _assert_identical(fork["param_groups"], reference["param_groups"], "param_groups")
+    assert len(fork["proposals"]) >= 64  # 32 combinations x (memory, proposals), on every device
+    _assert_identical(fork["proposals"], reference["proposals"], "proposals")
     if config_name == "base":
         # the comparison above covered pretrained DINOv2 weights, not random ones
         checkpoint = load_file(hf_hub_download("facebook/dinov2-small", "model.safetensors"))
