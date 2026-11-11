@@ -1,0 +1,77 @@
+# Upper bound (EODT_SPEC.md §9 step 11 (3), §10): RF-DETR 2XL of Table 7 of the RF-DETR paper (arXiv 2511.09554),
+# trained from DINOv2 with our training, so that only the training differs from the published model.
+# The architecture is the one of rfdetr_table7_2xl.yaml (the latency benchmark's file, left as it is), with the
+# pretrained DINOv2-B without registers resampled to patch 20 (rfdetr.models.eodt.adapt_baseline) instead of random
+# weights; the train_config is the one of baseline_medium_win_lrcd1.yaml but output_dir and run (checked by
+# tests/eodt/test_upperbound_yaml.py). The recipe follows the one chosen at step 11 for EoDT and baseline: align it
+# before the launch. UpperBoundConfig builds the model as BaselineConfig and adds the W&B tag "upperbound".
+# If it is longer than one job of 24 hours (the test job tells), launch a chain of jobs (scripts/leonardo/train.sh).
+# Read by rfdetr.models.eodt.load_configs.
+#
+# Written as the configurations hold them: "off" between quotes (bare off is the boolean false) and floats
+# with a dot (pyyaml reads 1e-4 as a string). TrainConfig would convert both, but the tests compare file and
+# configuration value by value.
+
+model:
+  model_config:
+    class_path: rfdetr.models.eodt.UpperBoundConfig
+    init_args:
+      # Table 7 of RF-DETR
+      encoder: dinov2_windowed_base  # DINOv2-B without registers, as the published checkpoints
+      resolution: 880
+      patch_size: 20  # pretrained DINOv2 resampled from patch 14 with timm's functions, as the baseline
+      positional_encoding_size: 44  # resolution / patch_size
+      num_windows: 2
+      dec_layers: 5
+      num_queries: 300
+      # not in the table: inferred from Appendix E, confirmed with rfdetr_plus 1.0.1 and 1.2.0 (EODT_SPEC.md §6)
+      hidden_dim: 512
+      sa_nheads: 16
+      ca_nheads: 32
+      dec_n_points: 4
+      out_feature_indexes: [3, 6, 9, 12]
+      projector: true  # MultiScaleProjector of RF-DETR, as published
+      projector_scale: [P4]
+      group_detr: 1  # Group-DETR is part of the training, not of the architecture: none, as in our training
+      num_classes: 90  # COCO: 91 logits, as in the paper
+  train_config:
+    class_path: rfdetr.config.TrainConfig
+    init_args:
+      dataset_file: coco
+      dataset_dir: /leonardo_scratch/fast/IscrC_EoDT/coco
+      output_dir: /leonardo_work/IscrC_EoDT/tcentonz/runs/rfdetr_table7_2xl_upperbound
+      # input and augmentation (§7.0)
+      multi_scale: "off"
+      square_resize_div_64: true
+      augmentation_backend: torchvision
+      # optimization (§7.1)
+      lr: 1.0e-4
+      lr_encoder: 1.5e-4
+      lr_vit_layer_decay: 0.8
+      lr_component_decay: 1.0  # step 11 (1): no factor on ViT and decoder
+      weight_decay: 1.0e-4
+      clip_max_norm: 0.1
+      lr_scheduler: cosine
+      warmup_epochs: 1
+      epochs: 12
+      batch_size: 4  # per GPU
+      grad_accum_steps: 1
+      cls_loss_coef: 1.0
+      use_ema: true
+      ema_decay: 0.993
+      amp_dtype: bf16
+      seed: 0
+      # evaluation (§6): COCO maxDets, applied per image and class; PostProcess keeps num_select = 300
+      # detections per image. The same for EoDT and baseline
+      eval_max_dets: 100
+      # logging (§7.3): W&B offline on the compute nodes, synced from the login node. scripts/leonardo/train.sh
+      # sets WANDB_RUN_ID to the name of this file, so that the jobs of a resumed run continue the same W&B run
+      wandb: true
+      project: eodt
+      run: rfdetr_table7_2xl_upperbound
+      tensorboard: false  # W&B and metrics.csv already hold the curves
+      # hardware (Leonardo)
+      devices: 4
+      num_nodes: 1
+      strategy: ddp
+      num_workers: 7  # per GPU: one core per GPU left to the main process

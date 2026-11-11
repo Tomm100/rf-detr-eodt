@@ -111,7 +111,7 @@ Q è configurabile, default 300 (EoMT ne usa 200). Nella modalità `selection`, 
 7. Costruisci il token di ogni query come **contenuto learnable** (`nn.Embedding(Q, D)`, come `query_feat` di RF-DETR) + **encoding del riferimento**: `gen_sineembed_for_position(riferimento)` seguito da un MLP, come `ref_point_head` nel decoder di RF-DETR. I due termini si sommano una volta sola, all'ingresso di L2. In ogni blocco L2 la testa predice Δ rispetto al riferimento (come `lite_refpoint_refine` di RF-DETR); i box non sono limitati a [0, 1], come in RF-DETR.
 8. Le uscite di questo stadio (classi e box b0 prima del detach e senza offset) vanno in `enc_outputs`, per la loss del primo stadio: stesso `SetCriterion`, matching ungherese sulle Q proposte, pesi `_enc` uguali a quelli finali, come in RF-DETR.
 
-**Limite di risoluzione per `selection`:** `gen_encoder_output_proposals` azzera le proposte con coordinate fuori da (0,01; 0,99). Con griglia ≥ 50 (≥ 800 px a patch 16) l'anello esterno di patch ha proposte nulle: se uno di quei patch viene selezionato, il suo box ha dimensione 0 e non riceve gradiente. RF-DETR ha lo stesso comportamento, quindi non si aggiunge un validatore (si manterrebbe la parità con la baseline); alle risoluzioni previste (576, 640, 704) non succede. Da riconsiderare solo se si va a ≥ 800 px.
+**Limite di risoluzione per `selection`:** `gen_encoder_output_proposals` azzera le proposte con coordinate fuori da (0,01; 0,99). Con griglia ≥ 50 (≥ 800 px a patch 16) l'anello esterno di patch ha proposte nulle: se uno di quei patch viene selezionato, il suo box ha dimensione 0 e non riceve gradiente. RF-DETR ha lo stesso comportamento, quindi non si aggiunge un validatore (si manterrebbe la parità con la baseline); alle risoluzioni previste (576, 640, 704) non succede. La soglia dipende dalla griglia, non dai pixel. **Upper bound (11/11/2026):** la 2XL (griglia 44) non è toccata; la Max (griglia 69) sì, con 272 patch su 4.761 (5,7%, l'anello esterno) a proposta nulla. Non si corregge, perché l'upper bound resta l'architettura di RF-DETR "as is". Va dichiarato nella tesi.
 
 **Inizializzazione dell'ultimo strato di `bbox_embed`:** dipende dalla modalità. In `learned` il box è assoluto: inizializzazione di default di `nn.Linear`, come DETR (con lo zero tutte le query partirebbero dallo stesso box). In `selection` il box è Δ rispetto al riferimento: **peso e bias a zero**, come RF-DETR, così all'inizio ogni query predice il proprio riferimento (cioè b0, perché `refpoint_embed` parte da zero). Il bias di `class_embed` parte da una probabilità a priori di 0,01 in entrambe le modalità, costante nel codice come in `LWDETR`.
 
@@ -341,6 +341,13 @@ Export, segmentazione, keypoint, modelli Plus (pacchetto `rfdetr_plus` e relativ
 Eccezione (Niccolò, 06/11/2026): le **architetture** XL, 2XL e Max della Tabella 7 di RF-DETR rientrano nel benchmark di latenza (costruite dalla tabella, pesi casuali, §6), e la Max viene addestrata "as is" come upper bound (§9, riga 11). Non si usano il codice del pacchetto `rfdetr_plus` né i suoi checkpoint.
 
 Aggiornamento (Niccolò, 10/11/2026): come upper bound si addestrano **sia la 2XL sia la Max**, e si decide a posteriori quale riportare. I **valori di configurazione** di XL e 2XL in `rfdetr_plus` si possono leggere, solo per verificare il decoder ricavato (§6). L'architettura si reimplementa nel nostro codice e si addestra da zero con il nostro training: la licenza PML 1.0 riguarda file, codice e pesi distribuiti da Roboflow, non l'architettura. Non si copia codice di `rfdetr_plus` e **non si rilasciano** codice né checkpoint di queste configurazioni.
+
+**Configurazione dell'upper bound (11/11/2026).**
+- **Architettura della Tabella 7 "as is":** DINOv2-B **senza registri** come i checkpoint pubblicati; patch 20 (2XL, 880 px, griglia 44) e 12 (Max, 828 px, griglia 69); finestre, decoder e query della tabella; projector presente.
+- **Pesi DINOv2-B:** ricampionati a patch 20 e 12 con lo stesso metodo della baseline (timm, FlexiViT per il patch embedding, interpolazione del positional embedding).
+- **Training nostro:** la ricetta scelta al passo 11 per EoDT e baseline, stesse epoch, `group_detr: 1`, niente Objects365. Group DETR fa parte del training, non dell'architettura.
+- **Lancio:** i training oltre le 24 h si spezzano in job in catena che si chiudono a fine epoch (`--stop-after-epoch`, `sbatch --dependency=afterok`).
+- **Memoria:** eventuali aggiustamenti, se a 828 px non basta, si decidono con Niccolò.
 
 ## 11. Ambienti
 

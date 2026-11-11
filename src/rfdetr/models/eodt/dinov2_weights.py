@@ -1,7 +1,11 @@
 # ------------------------------------------------------------------------
 # EoDT: encoder-only detection on top of RF-DETR
 # ------------------------------------------------------------------------
-"""Pretrained DINOv2 weights for the baseline, resampled to its patch size as timm does (EODT_SPEC.md §8, point 4)."""
+"""Pretrained DINOv2 weights for the baseline, resampled to its patch size as timm does (EODT_SPEC.md §8, point 4).
+
+The baseline uses DINOv2 with registers; the upper bound of Table 7 (§10) uses DINOv2 without registers, as RF-DETR's
+published checkpoints.
+"""
 
 from __future__ import annotations
 
@@ -19,15 +23,18 @@ _PATCH_EMBED = "embeddings.patch_embeddings.projection.weight"
 _POS_EMBED = "embeddings.position_embeddings"
 
 
-def load_native_dinov2(size: str) -> WindowedDinov2WithRegistersBackbone:
-    """Load the pretrained DINOv2 with registers as RF-DETR does at patch 14, checking every key.
+def load_native_dinov2(size: str, *, registers: bool = True) -> WindowedDinov2WithRegistersBackbone:
+    """Load the pretrained DINOv2 as RF-DETR does at patch 14, checking every key.
 
     The checkpoint is the one ``DinoV2.__init__`` loads at the native patch 14 and 37 x 37 grid, read with the same
-    class and the configuration of RF-DETR's JSON file. ``scripts/leonardo/prepare_offline.sh`` calls this function to
-    put the checkpoint in the cache of Leonardo.
+    class and the configuration of RF-DETR's JSON file; without registers the configuration has no register token,
+    as ``DinoV2.__init__`` sets it. ``scripts/leonardo/prepare_offline.sh`` calls this function to put the checkpoint
+    in the cache of Leonardo.
 
     Args:
         size: DINOv2 size: ``"small"``, ``"base"`` or ``"large"``.
+        registers: ``facebook/dinov2-with-registers-{size}`` with 4 registers (the baseline), or
+            ``facebook/dinov2-{size}`` without (the upper bound of Table 7).
 
     Returns:
         The native model, with every weight from the checkpoint.
@@ -36,8 +43,11 @@ def load_native_dinov2(size: str) -> WindowedDinov2WithRegistersBackbone:
         RuntimeError: If the checkpoint lacks a weight of the native model, has one that it does not expect or one
             of another shape.
     """
-    name = f"facebook/dinov2-with-registers-{size}"
-    native_config = WindowedDinov2WithRegistersConfig(**get_config(size, use_registers=True))
+    name = f"facebook/dinov2-with-registers-{size}" if registers else f"facebook/dinov2-{size}"
+    config = get_config(size, use_registers=registers)
+    if not registers:
+        config["num_register_tokens"] = 0  # the JSON file has none, and the class would default to 4
+    native_config = WindowedDinov2WithRegistersConfig(**config)
     native, info = WindowedDinov2WithRegistersBackbone.from_pretrained(
         name, config=native_config, output_loading_info=True
     )
@@ -48,24 +58,24 @@ def load_native_dinov2(size: str) -> WindowedDinov2WithRegistersBackbone:
 
 
 def load_pretrained_dinov2(encoder: WindowedDinov2WithRegistersBackbone, size: str) -> None:
-    """Load the pretrained DINOv2 with registers into RF-DETR's encoder, whatever its patch size and grid.
+    """Load the pretrained DINOv2 into RF-DETR's encoder, whatever its patch size, grid and registers.
 
     RF-DETR loads the Hugging Face weights only at the native patch 14 and 37 x 37 grid (``DinoV2.__init__``). The
     native model is loaded here in the same way (:func:`load_native_dinov2`), then the patch embedding and the
     positional embedding are resampled onto the patch size and the grid of ``encoder`` with the functions and
     arguments of timm's ``checkpoint_filter_fn``, which loads the backbone of EoDT: FlexiViT resize of the patch
     embedding, bicubic antialiased interpolation of the patch positions. The position of the CLS token and every other
-    tensor are copied unchanged.
+    tensor are copied unchanged. The checkpoint with or without registers is the one of the encoder.
 
     Args:
-        encoder: DINOv2 encoder built by RF-DETR (``Backbone.encoder.encoder``), with registers.
+        encoder: DINOv2 encoder built by RF-DETR (``Backbone.encoder.encoder``), with or without registers.
         size: DINOv2 size: ``"small"``, ``"base"`` or ``"large"``.
 
     Raises:
         RuntimeError: If the checkpoint does not match the native model (see :func:`load_native_dinov2`).
     """
     # both functions return the tensor unchanged when it already has the target size
-    state_dict = load_native_dinov2(size).state_dict()
+    state_dict = load_native_dinov2(size, registers=encoder.config.num_register_tokens > 0).state_dict()
     target = encoder.state_dict()
     patch_size = list(target[_PATCH_EMBED].shape[-2:])
     state_dict[_PATCH_EMBED] = resample_patch_embed(

@@ -13,15 +13,20 @@ Covers:
   without windows computes exactly the features of EoDT's ViT.
 - Windows and exported stages do not change the loaded weights.
 - A checkpoint that does not match the encoder is rejected.
+- The upper bound of Table 7 (§9 step 11 (3), §10), built from its YAML files: DINOv2-B without registers loads at
+  patch 20 (2XL) and 12 (Max) with exactly the keys of ``facebook/dinov2-base``, gives exactly the weights that timm
+  gives its DINOv2-B without registers at the same patch and resolution, and has a 44 x 44 and a 69 x 69 grid.
 
 ViT-B and ViT-L cases carry the ``gpu`` marker (slow on CPU, large downloads): ``-m "not gpu"`` runs ViT-S only.
 """
 
 import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
+import timm
 import torch
 from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
@@ -31,7 +36,7 @@ from rfdetr._namespace import _namespace_from_configs
 from rfdetr.config import TrainConfig
 from rfdetr.models.backbone.dinov2 import DinoV2, size_to_width
 from rfdetr.models.backbone.dinov2_with_windowed_attn import WindowedDinov2WithRegistersBackbone
-from rfdetr.models.eodt import BaselineConfig, EoDTBackbone, load_pretrained_dinov2
+from rfdetr.models.eodt import BaselineConfig, EoDTBackbone, load_configs, load_pretrained_dinov2
 from rfdetr.models.lwdetr import build_model, build_model_from_config
 from tests.eodt.vit_names import eodt_vit_name
 
@@ -47,6 +52,13 @@ GRID = RESOLUTION // PATCH_SIZE
 PATCH_EMBED = "embeddings.patch_embeddings.projection.weight"
 POS_EMBED = "embeddings.position_embeddings"
 MASK_TOKEN = "embeddings.mask_token"
+# upper bound of Table 7: YAML file of the run and its patch grid; DINOv2-B without registers in timm
+BASELINE_CONFIGS = Path(__file__).resolve().parents[2] / "configs" / "baseline"
+UPPER_BOUNDS = [
+    pytest.param("rfdetr_table7_2xl_upperbound.yaml", 44, id="2xl", marks=pytest.mark.gpu),  # 880 px, patch 20
+    pytest.param("rfdetr_table7_max_upperbound.yaml", 69, id="max", marks=pytest.mark.gpu),  # 828 px, patch 12
+]
+TIMM_VITB_NO_REGISTERS = "vit_base_patch14_dinov2.lvd142m"
 
 
 def _config(size: str, depth: int, **overrides: Any) -> BaselineConfig:
@@ -82,6 +94,21 @@ def baseline_encoder() -> Callable[[str, int], nn.Module]:
             torch.manual_seed(0)
             cache[size] = build_model_from_config(_config(size, depth)).backbone[0].encoder.encoder.eval()
         return cache[size]
+
+    return build
+
+
+@pytest.fixture(scope="module")
+def upperbound_encoder() -> Callable[[str], nn.Module]:
+    """Return a builder of the DINOv2 encoder of an upper bound from its YAML file, on CPU, cached per file."""
+    cache: dict[str, nn.Module] = {}
+
+    def build(name: str) -> nn.Module:
+        if name not in cache:
+            torch.manual_seed(0)
+            config = load_configs(BASELINE_CONFIGS / name)[0].model_copy(update={"device": "cpu"})
+            cache[name] = build_model_from_config(config).backbone[0].encoder.encoder.eval()
+        return cache[name]
 
     return build
 
@@ -235,6 +262,74 @@ def test_windows_do_not_change_weights(baseline_encoder) -> None:
     assert set(with_windows) == set(without_windows)
     for key, value in without_windows.items():
         assert torch.equal(with_windows[key], value), key
+
+
+@pytest.mark.parametrize(("name", "grid"), UPPER_BOUNDS)
+def test_upperbound_loads_checkpoint_without_registers(name: str, grid: int, upperbound_encoder) -> None:
+    """DINOv2-B without registers at patch 20 and 12 has exactly the keys of ``facebook/dinov2-base``.
+
+    Every tensor but the two resampled ones equals the checkpoint, read from its safetensors file independently of the
+    loader; the patch embedding has the patch size of the YAML and the positional embedding its grid.
+    """
+    config = load_configs(BASELINE_CONFIGS / name)[0]
+    checkpoint = load_file(hf_hub_download("facebook/dinov2-base", "model.safetensors"))
+    encoder = upperbound_encoder(name)
+    loaded = encoder.state_dict()
+
+    assert encoder.config.num_register_tokens == 0
+    assert set(loaded) == set(checkpoint)
+    for key in set(loaded) - {PATCH_EMBED, POS_EMBED}:
+        assert torch.equal(loaded[key], checkpoint[key]), key
+    assert loaded[PATCH_EMBED].shape == (768, 3, config.patch_size, config.patch_size)
+    assert loaded[POS_EMBED].shape == (1, 1 + grid * grid, 768)
+    assert torch.equal(loaded[POS_EMBED][:, :1], checkpoint[POS_EMBED][:, :1])  # the position of CLS is kept
+
+
+@pytest.mark.parametrize(("name", "grid"), UPPER_BOUNDS)
+def test_upperbound_same_weights_as_timm(name: str, grid: int, upperbound_encoder) -> None:
+    """Every DINOv2 tensor of the upper bound equals the one timm loads at the same patch size and resolution.
+
+    timm resamples DINOv2-B without registers with its own ``checkpoint_filter_fn``. Unlike the models with registers,
+    its ``pos_embed`` keeps the position of CLS, as Hugging Face's: CLS token and positions compare as they are; query,
+    key and value are the thirds of ``qkv``, and ``mask_token`` has no counterpart.
+    """
+    config = load_configs(BASELINE_CONFIGS / name)[0]
+    vit = timm.create_model(
+        TIMM_VITB_NO_REGISTERS,
+        pretrained=True,
+        patch_size=config.patch_size,
+        img_size=config.resolution,
+        num_classes=0,
+    )
+    expected_state = vit.state_dict()
+
+    compared = set()
+    for key, tensor in upperbound_encoder(name).state_dict().items():
+        if key == MASK_TOKEN:
+            continue
+        timm_name = eodt_vit_name(key)
+        expected = expected_state[timm_name]
+        if match := re.search(r"\.(query|key|value)\.", key):
+            third = expected.shape[0] // 3
+            index = ("query", "key", "value").index(match.group(1))
+            expected = expected[index * third : (index + 1) * third]
+        assert torch.equal(tensor, expected), f"{key} -> {timm_name}"
+        compared.add(timm_name)
+
+    assert compared == set(expected_state)
+    assert vit.patch_embed.grid_size == (grid, grid)
+
+
+@pytest.mark.parametrize(("name", "grid"), UPPER_BOUNDS)
+def test_upperbound_patch_grid(name: str, grid: int, upperbound_encoder) -> None:
+    """At the resolution of its YAML the encoder returns the four exported maps on a 44 x 44 or 69 x 69 grid."""
+    resolution = load_configs(BASELINE_CONFIGS / name)[0].resolution
+    x = torch.randn(1, 3, resolution, resolution, generator=torch.Generator().manual_seed(0))
+
+    with torch.no_grad():
+        feature_maps = upperbound_encoder(name)(x)[0]
+
+    assert [tuple(feature_map.shape) for feature_map in feature_maps] == [(1, 768, grid, grid)] * 4
 
 
 @pytest.mark.parametrize("problem", ["missing_keys", "unexpected_keys", "mismatched_keys"])

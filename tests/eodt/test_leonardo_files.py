@@ -5,8 +5,9 @@
 
 The jobs run only on Leonardo; on the PC these tests check that:
 - the YAML files of the test jobs and of the overfits on Leonardo, which verify the infrastructure of step 6 on the
-  two models of step 10 (EoDT selection and baseline_medium_win), differ from the YAML they copy only in the keys of
-  their role, so that the recipe they test is the real one;
+  two models of step 10 (EoDT selection and baseline_medium_win) and measure the upper bound of step 11 (3) before
+  its run, differ from the YAML they copy only in the keys of their role, so that the recipe they test is the real
+  one;
 - every W&B run, of EoDT and of the baseline, is named after its YAML file, the WANDB_RUN_ID that
   ``scripts/leonardo/train.sh`` sets;
 - ``train.sh`` and ``overfit.sh`` take the YAML file as argument, the files named in their usage comments exist, and
@@ -79,6 +80,16 @@ def _overfit_on_leonardo(run: str) -> dict[str, Any]:
             "baseline/baseline_medium_win_overfit_leonardo.yaml",
             _overfit_on_leonardo,
         ),
+        (
+            "baseline/rfdetr_table7_2xl_upperbound.yaml",
+            "baseline/rfdetr_table7_2xl_upperbound_testjob.yaml",
+            _test_job,
+        ),
+        (
+            "baseline/rfdetr_table7_max_upperbound.yaml",
+            "baseline/rfdetr_table7_max_upperbound_testjob.yaml",
+            _test_job,
+        ),
     ],
     ids=[
         "learned_testjob",
@@ -87,6 +98,8 @@ def _overfit_on_leonardo(run: str) -> dict[str, Any]:
         "selection_overfit_leonardo",
         "baseline_medium_win_testjob",
         "baseline_medium_win_overfit_leonardo",
+        "upperbound_2xl_testjob",
+        "upperbound_max_testjob",
     ],
 )
 def test_derived_yaml_changes_only_listed_keys(
@@ -136,7 +149,7 @@ def test_prepare_offline_caches_dinov2() -> None:
 
     Its Python code runs here as on the login node, for ViT-S only: first with internet, then with
     ``HF_HUB_OFFLINE=1`` as on a compute node. The Hugging Face weights go through ``load_native_dinov2``, the loader of
-    the baseline.
+    the baseline, and so does DINOv2-B without registers of the upper bound of Table 7.
     """
     script = (ROOT / "scripts" / "leonardo" / "prepare_offline.sh").read_text(encoding="utf-8")
     # the loop over the sizes and its Python code, between <<'EOF' and EOF
@@ -149,6 +162,7 @@ def test_prepare_offline_caches_dinov2() -> None:
     assert loop is not None
     assert loop["sizes"].split() == ["small", "base", "large"]
     assert "load_native_dinov2(size)" in loop["code"]
+    assert 'load_native_dinov2("base", registers=False)' in loop["code"]
 
     for offline, state in (("0", "downloaded"), ("1", "loaded offline")):
         run = subprocess.run(
@@ -162,6 +176,7 @@ def test_prepare_offline_caches_dinov2() -> None:
         lines = run.stdout.splitlines()
         assert f"vit_small_patch14_reg4_dinov2: {state}" in lines
         assert f"facebook/dinov2-with-registers-small: {state}" in lines
+        assert f"facebook/dinov2-base: {state}" in lines
 
 
 def test_benchmark_job() -> None:

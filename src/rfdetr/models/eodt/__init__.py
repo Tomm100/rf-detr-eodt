@@ -4,7 +4,7 @@
 """EoDT model subpackage."""
 
 from rfdetr.models.eodt.backbone import EoDTBackbone
-from rfdetr.models.eodt.baseline import BaselineConfig, LinearProjector, adapt_baseline
+from rfdetr.models.eodt.baseline import BaselineConfig, LinearProjector, UpperBoundConfig, adapt_baseline
 from rfdetr.models.eodt.build import build_eodt_criterion_from_config, build_eodt_from_config
 from rfdetr.models.eodt.config import EoDTConfig
 from rfdetr.models.eodt.dinov2_weights import load_native_dinov2, load_pretrained_dinov2
@@ -18,6 +18,7 @@ __all__ = [
     "EoDTBackbone",
     "EoDTConfig",
     "LinearProjector",
+    "UpperBoundConfig",
     "adapt_baseline",
     "build_eodt_criterion_from_config",
     "build_eodt_from_config",

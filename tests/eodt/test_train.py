@@ -7,19 +7,24 @@ Every run reads a copy of ``configs/eodt/eodt_vits_576_l2-3_learned.yaml`` writt
 on CPU and in fp32. Covers:
 - a run never overwrites the ``output_dir`` of another one, and resumes only the same configuration (point 6);
 - a job stopped after its first epoch resumes in a second job: schedule, EMA, ``metrics.csv`` and the W&B run
-  continue (24-hour limit of Leonardo, §7.3);
+  continue (24-hour limit of Leonardo, §7.3); the stopped job exits with code 0, as the chains of jobs of
+  ``scripts/leonardo/train.sh`` need;
 - ``run_info/`` holds the full configuration, the git commit and the versions of every job (§3.7);
-- a bf16 run does not fall back to another precision (point 7), and the W&B tags of a run.
+- a bf16 run does not fall back to another precision (point 7), and the W&B tags of a run, upper bound included.
 """
 
 import csv
 import json
+import os
 import re
+import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 import timm
+import torch
 import wandb
 
 from rfdetr.config import RFDETRMediumConfig
@@ -27,6 +32,7 @@ from rfdetr.models.eodt import EoDTConfig, load_configs
 from rfdetr.models.eodt.train import train, wandb_tags
 from rfdetr.training.callbacks.ema import RFDETREMACallback
 
+BASELINE_CONFIGS = Path(__file__).resolve().parents[2] / "configs" / "baseline"
 SMALL = {"resolution": 224}  # 14 x 14 grid keeps the CPU runs fast
 LOCAL = {"amp_dtype": None, "accelerator": "cpu", "batch_size": 2, "epochs": 2, "tensorboard": False}
 LIMITS = {"limit_train_batches": 2, "limit_val_batches": 1}  # 2 epochs of 2 steps
@@ -56,11 +62,46 @@ def test_bf16_must_be_resolved(eodt_yaml: Callable[..., Path]) -> None:
 
 
 def test_wandb_tags() -> None:
-    """The tags are the type of run and the model: eodt for EoDTConfig, baseline for RF-DETR's configurations."""
+    """The tags are the type of run and the model: eodt for EoDTConfig, baseline for RF-DETR's configurations.
+
+    The upper bound of Table 7 adds upperbound, read from the class of its YAML files; the baseline does not.
+    """
     assert wandb_tags(EoDTConfig(num_l2_blocks=3, query_mode="learned"), "run") == ["run", "eodt"]
     assert wandb_tags(RFDETRMediumConfig(pretrain_weights=None), "test") == ["test", "baseline"]
+    for name, tags in {
+        "baseline_medium_win_lrcd1.yaml": ["run", "baseline"],
+        "rfdetr_table7_2xl_upperbound.yaml": ["run", "baseline", "upperbound"],
+        "rfdetr_table7_max_upperbound.yaml": ["run", "baseline", "upperbound"],
+        "rfdetr_table7_max_upperbound_testjob.yaml": ["test", "baseline", "upperbound"],
+    }.items():
+        assert wandb_tags(load_configs(BASELINE_CONFIGS / name)[0], tags[0]) == tags, name
     with pytest.raises(ValueError, match="run_type"):
         wandb_tags(EoDTConfig(num_l2_blocks=3, query_mode="learned"), "debug")
+
+
+def test_job_stopped_after_an_epoch_exits_with_code_0(eodt_yaml: Callable[..., Path]) -> None:
+    """``scripts/leonardo/train.py`` stopped by ``--stop-after-epoch`` exits with code 0 after writing ``last.ckpt``.
+
+    In a chain of jobs the next one starts only after a successful job (``afterok``), so the stop must not look like a
+    failure. The script runs in its own process, as srun starts it; PYTHONIOENCODING keeps rich's table printable on
+    Windows.
+    """
+    path = eodt_yaml(SMALL, LOCAL)
+    output_dir = Path(load_configs(path)[1].output_dir)
+    script = Path(__file__).resolve().parents[2] / "scripts" / "leonardo" / "train.py"
+    limits = ["--limit-train-batches", "2", "--limit-val-batches", "1"]
+
+    run = subprocess.run(
+        [sys.executable, str(script), str(path), *limits, "--stop-after-epoch", "1"],
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert run.returncode == 0, run.stderr[-3000:]
+    checkpoint = torch.load(output_dir / "last.ckpt", map_location="cpu", weights_only=False)
+    assert (checkpoint["epoch"], checkpoint["global_step"]) == (0, 2)  # the first of the 2 epochs, then the stop
 
 
 def test_stop_and_resume(eodt_yaml: Callable[..., Path], monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

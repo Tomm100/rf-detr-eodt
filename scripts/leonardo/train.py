@@ -26,7 +26,11 @@ def main() -> None:
     parser.add_argument("--run-type", choices=("run", "test"), default="run", help="W&B tag of the run")
     parser.add_argument("--limit-train-batches", type=int, help="training batches per epoch, test jobs only")
     parser.add_argument("--limit-val-batches", type=int, help="validation batches per epoch, test jobs only")
-    parser.add_argument("--stop-after-epoch", type=int, help="last epoch of this job, counted from 1, test jobs only")
+    parser.add_argument(
+        "--stop-after-epoch",
+        type=int,
+        help="last epoch of this job, counted from 1: test jobs, and runs split into jobs of whole epochs",
+    )
     args = parser.parse_args()
     train(
         args.config,

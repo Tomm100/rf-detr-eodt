@@ -1,0 +1,68 @@
+# Test job of the upper bound Max on Leonardo (EODT_SPEC.md §9 step 11 (3)): memory per GPU, time per step and
+# resume of rfdetr_table7_max_upperbound.yaml before its full run. Copy of that file with only the keys marked
+# "test job:" changed (checked by tests/eodt/test_leonardo_files.py); the commands are in scripts/leonardo/train.sh.
+# Read by rfdetr.models.eodt.load_configs.
+
+model:
+  model_config:
+    class_path: rfdetr.models.eodt.UpperBoundConfig
+    init_args:
+      # Table 7 of RF-DETR
+      encoder: dinov2_windowed_base  # DINOv2-B without registers, as the published checkpoints
+      resolution: 828
+      patch_size: 12  # pretrained DINOv2 resampled from patch 14 with timm's functions, as the baseline
+      positional_encoding_size: 69  # resolution / patch_size
+      num_windows: 1
+      dec_layers: 6
+      num_queries: 300
+      # not in the table: inferred from the parameters and GFLOPs of Appendix E, not verified (EODT_SPEC.md §6)
+      hidden_dim: 512
+      sa_nheads: 16
+      ca_nheads: 32
+      dec_n_points: 4
+      out_feature_indexes: [3, 6, 9, 12]
+      projector: true  # MultiScaleProjector of RF-DETR, as published
+      projector_scale: [P4]
+      group_detr: 1  # Group-DETR is part of the training, not of the architecture: none, as in our training
+      num_classes: 90  # COCO: 91 logits, as in the paper
+  train_config:
+    class_path: rfdetr.config.TrainConfig
+    init_args:
+      dataset_file: coco
+      dataset_dir: /leonardo_scratch/fast/IscrC_EoDT/coco
+      output_dir: /leonardo_work/IscrC_EoDT/tcentonz/runs/rfdetr_table7_max_upperbound_testjob  # test job
+      # input and augmentation (§7.0)
+      multi_scale: "off"
+      square_resize_div_64: true
+      augmentation_backend: torchvision
+      # optimization (§7.1)
+      lr: 1.0e-4
+      lr_encoder: 1.5e-4
+      lr_vit_layer_decay: 0.8
+      lr_component_decay: 1.0  # step 11 (1): no factor on ViT and decoder
+      weight_decay: 1.0e-4
+      clip_max_norm: 0.1
+      lr_scheduler: cosine
+      warmup_epochs: 1
+      epochs: 2  # test job: two epochs, the first stopped with --stop-after-epoch 1
+      batch_size: 4  # per GPU
+      grad_accum_steps: 1
+      cls_loss_coef: 1.0
+      use_ema: true
+      ema_decay: 0.993
+      amp_dtype: bf16
+      seed: 0
+      # evaluation (§6): COCO maxDets, applied per image and class; PostProcess keeps num_select = 300
+      # detections per image. The same for EoDT and baseline
+      eval_max_dets: 100
+      # logging (§7.3): W&B offline on the compute nodes, synced from the login node. scripts/leonardo/train.sh
+      # sets WANDB_RUN_ID to the name of this file, so that the jobs of a resumed run continue the same W&B run
+      wandb: true
+      project: eodt
+      run: rfdetr_table7_max_upperbound_testjob  # test job: name of this file
+      tensorboard: false  # W&B and metrics.csv already hold the curves
+      # hardware (Leonardo)
+      devices: 4
+      num_nodes: 1
+      strategy: ddp
+      num_workers: 7  # per GPU: one core per GPU left to the main process

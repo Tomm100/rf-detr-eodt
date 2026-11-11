@@ -35,6 +35,7 @@ import yaml
 from pytorch_lightning import Callback, LightningModule, Trainer, seed_everything
 
 from rfdetr.config import BaseConfig, ModelConfig, TrainConfig
+from rfdetr.models.eodt.baseline import UpperBoundConfig
 from rfdetr.models.eodt.config import EoDTConfig
 from rfdetr.models.eodt.yaml_config import load_configs
 from rfdetr.training.module_data import RFDETRDataModule
@@ -51,6 +52,9 @@ _PACKAGES = ("rfdetr", "torch", "torchvision", "timm", "transformers", "pytorch-
 def wandb_tags(model_config: ModelConfig, run_type: RunType) -> list[str]:
     """Return the W&B tags of a run: its type (``"run"`` or ``"test"``) and its model (``"eodt"`` or ``"baseline"``).
 
+    The upper bound of Table 7 (``UpperBoundConfig``, EODT_SPEC.md §10) is an RF-DETR as the baseline, with the
+    further tag ``"upperbound"``.
+
     Args:
         model_config: Model configuration; EoDT is an ``EoDTConfig``, the baseline any other ``ModelConfig``.
         run_type: ``"run"`` for the runs of the thesis, ``"test"`` for test jobs and overfits.
@@ -60,7 +64,10 @@ def wandb_tags(model_config: ModelConfig, run_type: RunType) -> list[str]:
     """
     if run_type not in ("run", "test"):
         raise ValueError(f"run_type must be 'run' or 'test', got {run_type!r}")
-    return [run_type, "eodt" if isinstance(model_config, EoDTConfig) else "baseline"]
+    tags = [run_type, "eodt" if isinstance(model_config, EoDTConfig) else "baseline"]
+    if isinstance(model_config, UpperBoundConfig):
+        tags.append("upperbound")
+    return tags
 
 
 def write_config(path: Path, model_config: ModelConfig, train_config: TrainConfig) -> None:
@@ -236,10 +243,14 @@ class TrainingStats(Callback):
 
 
 class StopAfterEpoch(Callback):
-    """Stop the job at the end of an epoch, to test a resume (EODT_SPEC.md §9, step 6).
+    """Stop the job at the end of an epoch: to test a resume (EODT_SPEC.md §9, step 6), or to split a run longer
+    than the 24 hours of a job into jobs that each end with a whole epoch (``scripts/leonardo/train.sh``).
 
     Unlike fewer ``epochs`` in the YAML, it leaves the length of the learning-rate schedule unchanged. The epoch must
-    be validated: ``last.ckpt`` is written at the end of the validation, which runs before this hook.
+    be validated (validation at every epoch, ``eval_interval: 1``): Lightning then validates before this hook and
+    writes ``last.ckpt`` after it, in the ``on_train_epoch_end`` of ``ModelCheckpoint``, which runs after the other
+    callbacks, so the checkpoint holds the stopped epoch. The job then ends normally, with exit code 0, so that the next
+    job of a chain can depend on it with ``afterok``.
 
     Args:
         epoch: Last epoch of the job, counted from 1.
@@ -273,7 +284,8 @@ def train(
         run_type: ``"run"`` or ``"test"``, the W&B tag of the run.
         limit_train_batches: Training batches per epoch, for test jobs only; ``None`` uses the whole dataset.
         limit_val_batches: Validation batches per epoch, for test jobs only; ``None`` uses the whole dataset.
-        stop_after_epoch: Last epoch of this job (from 1), for test jobs of a resume; ``None`` trains to the end.
+        stop_after_epoch: Last epoch of this job (from 1), for test jobs of a resume and for the jobs of a run longer
+            than 24 hours; ``None`` trains to the end.
 
     Returns:
         The trainer after ``fit``.

@@ -32,7 +32,7 @@ class BaselineConfig(ModelConfig):
 
     Attributes:
         encoder: DINOv2 with 4 registers, of size small, base or large, in RF-DETR's windowed implementation;
-            ``num_windows: 1`` gives global attention.
+            ``num_windows: 1`` gives global attention. Only :class:`UpperBoundConfig` is without registers.
         out_feature_indexes: Blocks (from 1) whose output goes to the projector, strictly increasing. The last one
             must be the last block of the ViT: RF-DETR runs the ViT only up to the last exported block, so the later
             pretrained blocks would never be used, and counts the layers of the learning-rate decay up to it.
@@ -57,6 +57,11 @@ class BaselineConfig(ModelConfig):
         """DINOv2 size of the encoder: ``"small"``, ``"base"`` or ``"large"``."""
         return self.encoder.rsplit("_", 1)[-1]
 
+    @property
+    def registers(self) -> bool:
+        """Whether the encoder is DINOv2 with registers, as RF-DETR reads it from the name (``backbone.py``)."""
+        return "registers" in self.encoder.split("_")
+
     @model_validator(mode="after")
     def _check_positional_encoding_size(self) -> BaselineConfig:
         """Require the positional embedding on the patch grid, as in EoDT: no interpolation at every forward."""
@@ -70,7 +75,7 @@ class BaselineConfig(ModelConfig):
     @model_validator(mode="after")
     def _check_out_feature_indexes(self) -> BaselineConfig:
         """Require the exported blocks to end at the last block of the ViT; without projector, one block, no windows."""
-        depth = get_config(self.dinov2_size, use_registers=True)["num_hidden_layers"]
+        depth = get_config(self.dinov2_size, use_registers=self.registers)["num_hidden_layers"]
         indexes = self.out_feature_indexes
         if not indexes or indexes != sorted(set(indexes)) or indexes[0] < 1 or indexes[-1] != depth:
             raise ValueError(
@@ -89,6 +94,19 @@ class BaselineConfig(ModelConfig):
                 "windowed and none would have global attention"
             )
         return self
+
+
+class UpperBoundConfig(BaselineConfig):
+    """Architecture configuration of the upper bound: an RF-DETR of Table 7 as published, with our training (§10).
+
+    The model is built as the baseline's (:class:`BaselineConfig`); its own class marks the runs of the upper bound
+    in the YAML file, which W&B tags ``upperbound`` (``rfdetr.models.eodt.train.wandb_tags``).
+
+    Attributes:
+        encoder: DINOv2-B without registers, as RF-DETR's published checkpoints and Table 7.
+    """
+
+    encoder: Literal["dinov2_windowed_base"]  # type: ignore[assignment]
 
 
 class LinearProjector(nn.Module):
@@ -131,8 +149,8 @@ def adapt_baseline(model: LWDETR, model_config: BaselineConfig) -> None:
     load_pretrained_dinov2(backbone.encoder.encoder, model_config.dinov2_size)
     # DinoV2 has just warned that it does not load the weights at this patch size
     logger.info(
-        f"DINOv2 {model_config.dinov2_size} with registers: pretrained weights resampled to patch "
-        f"{model_config.patch_size}"
+        f"DINOv2 {model_config.dinov2_size} {'with' if model_config.registers else 'without'} registers: pretrained "
+        f"weights resampled to patch {model_config.patch_size}"
     )
     if not model_config.projector:
         backbone.projector = LinearProjector(backbone.encoder._out_feature_channels[-1], model_config.hidden_dim)

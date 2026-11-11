@@ -5,9 +5,10 @@
 #   bash scripts/leonardo/prepare_offline.sh
 #
 # It downloads the DINOv2 weights of the three sizes into HF_HOME, for EoDT (timm) and for the baseline (Hugging Face
-# facebook/dinov2-with-registers-*, read by RF-DETR's loader, EODT_SPEC.md §8 point 4), checks that they load without
-# internet as on the compute nodes, downloads RF-DETR's published checkpoints of the latency benchmark into RF_HOME
-# and checks their MD5, checks that COCO and coco_mini are in place and creates the folder of the SLURM logs.
+# facebook/dinov2-with-registers-*, read by RF-DETR's loader, EODT_SPEC.md §8 point 4), and DINOv2-B without registers
+# for the upper bound of Table 7 (facebook/dinov2-base, §10), checks that they load without internet as on the
+# compute nodes, downloads RF-DETR's published checkpoints of the latency benchmark into RF_HOME and checks their MD5,
+# checks that COCO and coco_mini are in place and creates the folder of the SLURM logs.
 set -eo pipefail
 source /leonardo_work/IscrC_EoDT/tcentonz/rf-detr-eodt/scripts/leonardo/env.sh
 
@@ -30,6 +31,8 @@ for size in sys.argv[1:]:
     print(f"{name}: {state}")
     load_native_dinov2(size)  # baseline: RF-DETR's loader at patch 14, which also checks every key
     print(f"facebook/dinov2-with-registers-{size}: {state}")
+load_native_dinov2("base", registers=False)  # upper bound of Table 7: DINOv2-B without registers
+print(f"facebook/dinov2-base: {state}")
 EOF
 done
 

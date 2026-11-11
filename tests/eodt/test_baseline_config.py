@@ -79,13 +79,17 @@ def test_missing_architecture_field(name: str) -> None:
     "changes",
     [
         {"encoder": "dinov2_windowed_small"},  # no registers
+        {"encoder": "dinov2_windowed_base"},  # no registers: the encoder of the upper bound only
         {"group_detr": 13},  # Group-DETR
         {"pretrain_weights": "rf-detr-medium.pth"},  # RF-DETR checkpoint, pretrained on Objects365
     ],
-    ids=["no-registers", "group-detr", "rfdetr-checkpoint"],
+    ids=["no-registers", "base-no-registers", "group-detr", "rfdetr-checkpoint"],
 )
 def test_rejects_values_outside_the_baseline(changes: dict[str, Any]) -> None:
-    """DINOv2 with registers, one query group and no RF-DETR checkpoint (§5)."""
+    """DINOv2 with registers, one query group and no RF-DETR checkpoint (§5).
+
+    DINOv2-B without registers is accepted only by ``UpperBoundConfig`` (tested in ``test_upperbound_yaml.py``).
+    """
     with pytest.raises(ValidationError):
         BaselineConfig(**_config(**changes))
 
