@@ -2,6 +2,7 @@
 # the latency benchmark (EODT_SPEC.md §6, exception of §10). Neither the rfdetr_plus package nor its checkpoints.
 # The table gives resolution, patch, windows, decoder layers, queries and backbone (DINOv2-B); the other fields of
 # the decoder are inferred from the parameters and GFLOPs of Appendix E (checked by tests/eodt/test_benchmark.py).
+# Unlike XL and 2XL, the Max stays inferred, not verified: rfdetr_plus 1.0.1 and 1.2.0 have no configuration for it.
 # The train_config is the one of baseline_medium_win.yaml but output_dir and run, because load_configs needs one:
 # to be reviewed before a training (§9, step 11). Read by rfdetr.models.eodt.load_configs.
 #
@@ -21,7 +22,7 @@ model:
       num_windows: 1
       dec_layers: 6
       num_queries: 300
-      # not in the table: inferred from the parameters and GFLOPs of Appendix E (EODT_SPEC.md §6)
+      # not in the table: inferred from the parameters and GFLOPs of Appendix E, not verified (EODT_SPEC.md §6)
       hidden_dim: 512
       sa_nheads: 16
       ca_nheads: 32

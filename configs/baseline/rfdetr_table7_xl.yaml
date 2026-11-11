@@ -1,7 +1,11 @@
 # RF-DETR XL of Table 7 of the RF-DETR paper (arXiv 2511.09554), as an architecture only: random weights, for
-# the latency benchmark (EODT_SPEC.md §6, exception of §10). Neither the rfdetr_plus package nor its checkpoints.
+# the latency benchmark (EODT_SPEC.md §6, exception of §10). Neither the code of the rfdetr_plus package nor its
+# checkpoints: only its configuration values were read, to check the decoder (§10).
 # The table gives resolution, patch, windows, decoder layers, queries and backbone (DINOv2-B); the other fields of
-# the decoder are inferred from the parameters and GFLOPs of Appendix E (checked by tests/eodt/test_benchmark.py).
+# the decoder were inferred from the parameters and GFLOPs of Appendix E (checked by tests/eodt/test_benchmark.py)
+# and confirmed on 11/11/2026 against RFDETRXLargeConfig of rfdetr_plus 1.0.1 and 1.2.0: every field of the
+# architecture is equal. num_classes stays 90 as in the paper, whose parameters hold only with 91 logits, not the
+# 365 of that configuration.
 # The train_config is the one of baseline_medium_win.yaml but output_dir and run, because load_configs needs one:
 # to be reviewed before a training (§9, step 11). Read by rfdetr.models.eodt.load_configs.
 #
@@ -21,7 +25,7 @@ model:
       num_windows: 1
       dec_layers: 5
       num_queries: 300
-      # not in the table: inferred from the parameters and GFLOPs of Appendix E (EODT_SPEC.md §6)
+      # not in the table: inferred from Appendix E, confirmed with rfdetr_plus 1.0.1 and 1.2.0 (EODT_SPEC.md §6)
       hidden_dim: 512
       sa_nheads: 16
       ca_nheads: 32
@@ -29,7 +33,7 @@ model:
       out_feature_indexes: [3, 6, 9, 12]
       projector_scale: [P4]
       group_detr: 1  # the parameters used in inference
-      num_classes: 90  # COCO: 91 logits
+      num_classes: 90  # COCO: 91 logits, as in the paper (365 in rfdetr_plus)
       pretrain_weights: null  # no RF-DETR checkpoint: latency does not depend on the weights (§6)
   train_config:
     class_path: rfdetr.config.TrainConfig
