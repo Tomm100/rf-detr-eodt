@@ -348,6 +348,19 @@ Aggiornamento (Niccolò, 10/11/2026): come upper bound si addestrano **sia la 2X
 - **Training nostro:** la ricetta scelta al passo 11 per EoDT e baseline, stesse epoch, `group_detr: 1`, niente Objects365. Group DETR fa parte del training, non dell'architettura.
 - **Lancio:** i training oltre le 24 h si spezzano in job in catena che si chiudono a fine epoch (`--stop-after-epoch`, `sbatch --dependency=afterok`).
 - **Memoria:** eventuali aggiustamenti, se a 828 px non basta, si decidono con Niccolò.
+- **Job di prova (11/11/2026): PASS per entrambi.** Coda di debug, 4 A100, batch 4 per GPU, 300 step e ripresa da `last.ckpt`:
+  - 2XL: job 64193452 → 64193454;
+  - Max: job 64193465 → 64193466;
+  - tutti `COMPLETED` con codice 0, quindi la catena con `afterok` funziona; le due parti di ogni modello finiscono nella stessa run W&B.
+
+  Misure:
+
+  | Modello | Tempo per step | Memoria per GPU | 12 epoch con valutazione | Job da 24 h |
+  |---|---|---|---|---|
+  | 2XL | ~0,17 s | ~6,2 GB | ~4,5 h | 1 |
+  | Max | ~0,30 s | ~11,3 GB | ~8 h | 1 |
+
+  La memoria per GPU è su 64 GB, quindi nessun aggiustamento. Per confronto, la baseline Medium impiega 0,124 s per step. Coincide con le stime ottimistiche del piano.
 
 ## 11. Ambienti
 
